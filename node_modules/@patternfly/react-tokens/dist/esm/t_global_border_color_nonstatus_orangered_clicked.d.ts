@@ -1,0 +1,6 @@
+export const t_global_border_color_nonstatus_orangered_clicked: {
+  "name": "--pf-t--global--border--color--nonstatus--orangered--clicked",
+  "value": "#f4784a",
+  "var": "var(--pf-t--global--border--color--nonstatus--orangered--clicked)"
+};
+export default t_global_border_color_nonstatus_orangered_clicked;

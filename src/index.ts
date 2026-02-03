@@ -1,0 +1,1 @@
+export { default as FinOpsTab } from './components/FinOpsTab';

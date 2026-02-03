@@ -1,5 +1,5 @@
 {
-  "name": "console-plugin-template",
+  "name": "finops-plugin",
   "version": "0.0.1",
   "description": "Template project for OpenShift Console plugins",
   "private": true,
@@ -68,17 +68,17 @@
     "webpack-cli": "^4.9.2",
     "webpack-dev-server": "^4.7.4"
   },
-  "consolePlugin": {
-    "name": "console-plugin-template",
-    "version": "0.0.1",
-    "displayName": "OpenShift Console Plugin Template",
-    "description": "Template project for OpenShift Console plugins. Edit package.json to change this message and the plugin name.",
-    "exposedModules": {
-      "ExamplePage": "./components/ExamplePage"
-    },
-    "dependencies": {
-      "@console/pluginAPI": "*"
-    }
+"consolePlugin": {
+  "name": "finops-plugin",
+  "version": "0.0.1",
+  "displayName": "FinOps Plugin",
+  "description": "FinOps tab on Deployment details",
+  "exposedModules": {
+    "FinOpsTab": "./components/FinOpsTab"
+  },
+  "dependencies": {
+    "@console/pluginAPI": "*"
+  }
   },
   "peerDependencies": {
     "@babel/core": "^7.0.1",

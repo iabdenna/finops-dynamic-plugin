@@ -27,16 +27,16 @@ type Series = {
 };
 
 /**
- * PromQL queries (basées exactement sur celles que tu as fournies)
+ * PromQL queries
  */
 const buildQueries = (namespace: string) => {
   const limitQuery = `
 max by (container, namespace, workload_type, workload) (
-  kube_pod_container_resource_limits{resource="memory", namespace='${namespace}'}
+  kube_pod_container_resource_limits{resource="memory", namespace="${namespace}", container!=""}
   * on(namespace, pod) group_left(workload, workload_type)
   namespace_workload_pod:kube_pod_owner:relabel{
-    namespace='${namespace}',
-    workload_type=~'deployment|statefulset|daemonset'
+    namespace="${namespace}",
+    workload_type=~"deployment|statefulset|daemonset"
   }
 )
 `.trim();
@@ -45,15 +45,15 @@ max by (container, namespace, workload_type, workload) (
 max by (container, namespace, workload_type, workload) (
   max_over_time(
     container_memory_working_set_bytes{
-      namespace='${namespace}',
+      namespace="${namespace}",
       container!="",
       container!="POD"
     }[7d]
   )
   * on(namespace, pod) group_left(workload, workload_type)
   namespace_workload_pod:kube_pod_owner:relabel{
-    namespace='${namespace}',
-    workload_type=~'deployment|statefulset|daemonset'
+    namespace="${namespace}",
+    workload_type=~"deployment|statefulset|daemonset"
   }
 )
 `.trim();
@@ -85,6 +85,26 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
 const bytesToGiB = (b: number) => b / (1024 ** 3);
 
 /**
+ * Couleur selon le ratio usage / limit
+ */
+const getUsageStyle = (usageGiB: number | null, limitGiB: number | null) => {
+  if (usageGiB === null || limitGiB === null || limitGiB === 0) {
+    return { color: '#151515', fontWeight: 400 };
+  }
+
+  const ratio = usageGiB / limitGiB;
+
+  if (ratio >= 0.9) {
+    return { color: '#c9190b', fontWeight: 600 }; // rouge
+  }
+  if (ratio >= 0.7) {
+    return { color: '#f0ab00', fontWeight: 600 }; // orange
+  }
+
+  return { color: '#151515', fontWeight: 400 };
+};
+
+/**
  * FinOps tab component
  */
 const FinOpsTab: React.FC<Props> = ({ obj }) => {
@@ -100,18 +120,18 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     endpoint: PrometheusEndpoint.QUERY,
     query: limitQuery,
     namespace,
-    delay: 30_000,
+    delay: 60_000,
   });
 
   const [usageResp, usageError, usageLoading] = usePrometheusPoll({
     endpoint: PrometheusEndpoint.QUERY,
     query: usageQuery,
     namespace,
-    delay: 30_000,
+    delay: 60_000,
   });
 
   /**
-   * Filter uniquement sur le Deployment courant
+   * Filter sur le Deployment courant
    */
   const limits = React.useMemo(
     () =>
@@ -150,15 +170,17 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       ]),
     ).sort();
 
-    return containers.map((container) => ({
-      container,
-      limitGiB: limitByContainer.has(container)
-        ? bytesToGiB(limitByContainer.get(container)!)
-        : null,
-      usageGiB: usageByContainer.has(container)
-        ? bytesToGiB(usageByContainer.get(container)!)
-        : null,
-    }));
+    return containers.map((container) => {
+      const limitBytes = limitByContainer.get(container);
+      const usageBytes = usageByContainer.get(container);
+
+      const limitGiB =
+        limitBytes !== undefined ? bytesToGiB(limitBytes) : null;
+      const usageGiB =
+        usageBytes !== undefined ? bytesToGiB(usageBytes) : null;
+
+      return { container, limitGiB, usageGiB };
+    });
   }, [limits, usage]);
 
   const loading = limitLoading || usageLoading;
@@ -172,9 +194,9 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
         Deployment <b>{deploymentName}</b> in namespace <b>{namespace}</b>
       </div>
 
-      {error && (
+      {error && rows.length === 0 && (
         <div style={{ color: '#c9190b', marginBottom: 12 }}>
-          Error querying Prometheus: {String(error)}
+          Error querying Prometheus
         </div>
       )}
 
@@ -210,35 +232,41 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
               </td>
             </tr>
           ) : (
-            rows.map((r) => (
-              <tr key={r.container}>
-                <td style={{ padding: 8, borderTop: '1px solid #eee' }}>
-                  {r.container || '(empty)'}
-                </td>
-                <td
-                  style={{
-                    padding: 8,
-                    borderTop: '1px solid #eee',
-                    textAlign: 'right',
-                  }}
-                >
-                  {r.limitGiB !== null
-                    ? r.limitGiB.toFixed(2)
-                    : 'N/A'}
-                </td>
-                <td
-                  style={{
-                    padding: 8,
-                    borderTop: '1px solid #eee',
-                    textAlign: 'right',
-                  }}
-                >
-                  {r.usageGiB !== null
-                    ? r.usageGiB.toFixed(2)
-                    : 'N/A'}
-                </td>
-              </tr>
-            ))
+            rows.map((r) => {
+              const usageStyle = getUsageStyle(r.usageGiB, r.limitGiB);
+
+              return (
+                <tr key={r.container}>
+                  <td style={{ padding: 8, borderTop: '1px solid #eee' }}>
+                    {r.container || '(empty)'}
+                  </td>
+                  <td
+                    style={{
+                      padding: 8,
+                      borderTop: '1px solid #eee',
+                      textAlign: 'right',
+                    }}
+                  >
+                    {r.limitGiB !== null
+                      ? r.limitGiB.toFixed(2)
+                      : 'N/A'}
+                  </td>
+                  <td
+                    style={{
+                      padding: 8,
+                      borderTop: '1px solid #eee',
+                      textAlign: 'right',
+                      color: usageStyle.color,
+                      fontWeight: usageStyle.fontWeight,
+                    }}
+                  >
+                    {r.usageGiB !== null
+                      ? r.usageGiB.toFixed(2)
+                      : 'N/A'}
+                  </td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>

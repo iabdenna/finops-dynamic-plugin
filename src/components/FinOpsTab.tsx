@@ -5,9 +5,6 @@ import {
   type PrometheusResponse,
 } from '@openshift-console/dynamic-plugin-sdk';
 
-/**
- * Props injectées automatiquement par la console
- */
 type K8sObject = {
   metadata?: {
     name?: string;
@@ -26,9 +23,6 @@ type Series = {
   value: number;
 };
 
-/**
- * PromQL queries
- */
 const buildQueries = (namespace: string) => {
   const limitQuery = `
 max by (container, namespace, workload_type, workload) (
@@ -61,17 +55,12 @@ max by (container, namespace, workload_type, workload) (
   return { limitQuery, usageQuery };
 };
 
-/**
- * Parse réponse Prometheus
- */
 const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
   const results: any[] = (resp as any)?.data?.result ?? [];
-
   return results
     .map((r) => {
       const value = Number(r?.value?.[1]);
       if (!Number.isFinite(value)) return null;
-
       return {
         container: r.metric?.container ?? '',
         workload: r.metric?.workload ?? '',
@@ -83,38 +72,134 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
 };
 
 const bytesToGiB = (b: number) => b / (1024 ** 3);
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
-/**
- * Couleur selon le ratio usage / limit
- */
-const getUsageStyle = (usageGiB: number | null, limitGiB: number | null) => {
-  if (usageGiB === null || limitGiB === null || limitGiB === 0) {
-    return { color: '#151515', fontWeight: 400 };
-  }
+const getRatioColor = (ratio: number | null) => {
+  if (ratio === null) return '#6a6e73'; // grey
+  if (ratio >= 0.9) return '#c9190b'; // red
+  if (ratio >= 0.7) return '#f0ab00'; // orange
+  return '#3e8635'; // green
+};
 
-  const ratio = usageGiB / limitGiB;
-
-  if (ratio >= 0.9) {
-    return { color: '#c9190b', fontWeight: 600 }; // rouge
-  }
-  if (ratio >= 0.7) {
-    return { color: '#f0ab00', fontWeight: 600 }; // orange
-  }
-
-  return { color: '#151515', fontWeight: 400 };
+const getStatusLabel = (ratio: number | null) => {
+  if (ratio === null) return { text: 'N/A', color: '#6a6e73' };
+  if (ratio >= 0.9) return { text: 'CRITICAL', color: '#c9190b' };
+  if (ratio >= 0.7) return { text: 'WARNING', color: '#f0ab00' };
+  return { text: 'OK', color: '#3e8635' };
 };
 
 /**
- * FinOps tab component
+ * Bigger, clearer donut card
+ * - Donut shows usage/limit
+ * - Center: usage GiB
+ * - Badge: percentage
+ * - Below: limit GiB + status
  */
+const Donut: React.FC<{
+  percent: number; // 0..1
+  color: string;
+  usageGiBText: string;
+  limitGiBText: string;
+  percentText: string; // e.g. "65%"
+  statusText: string;
+  statusColor: string;
+}> = ({ percent, color, usageGiBText, limitGiBText, percentText, statusText, statusColor }) => {
+  const size = 200;   // 👈 larger
+  const stroke = 18;  // 👈 thicker
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const dash = c * clamp01(percent);
+  const gap = c - dash;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+      <div style={{ position: 'relative', width: size, height: size }}>
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          {/* track */}
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke="#d2d2d2"
+            strokeWidth={stroke}
+          />
+          {/* progress */}
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke={color}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={`${dash} ${gap}`}
+            transform={`rotate(-90 ${size / 2} ${size / 2})`}
+          />
+        </svg>
+
+        {/* center content */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+          }}
+        >
+          <div style={{ fontSize: 28, fontWeight: 800, color: '#151515' }}>
+            {usageGiBText}
+          </div>
+
+          <div
+            style={{
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: '#f5f5f5',
+              border: `1px solid ${color}`,
+              color,
+              fontWeight: 700,
+              fontSize: 12,
+            }}
+          >
+            {percentText}
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom details */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+        <div style={{ fontSize: 14, color: '#6a6e73' }}>
+          Limit: <span style={{ color: '#151515', fontWeight: 700 }}>{limitGiBText}</span>
+        </div>
+
+        <div
+          style={{
+            padding: '2px 10px',
+            borderRadius: 999,
+            background: '#ffffff',
+            border: `1px solid ${statusColor}`,
+            color: statusColor,
+            fontWeight: 800,
+            fontSize: 12,
+            letterSpacing: 0.4,
+          }}
+        >
+          {statusText}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const FinOpsTab: React.FC<Props> = ({ obj }) => {
   const namespace = obj?.metadata?.namespace ?? '';
   const deploymentName = obj?.metadata?.name ?? '';
 
-  const { limitQuery, usageQuery } = React.useMemo(
-    () => buildQueries(namespace),
-    [namespace],
-  );
+  const { limitQuery, usageQuery } = React.useMemo(() => buildQueries(namespace), [namespace]);
 
   const [limitResp, limitError, limitLoading] = usePrometheusPoll({
     endpoint: PrometheusEndpoint.QUERY,
@@ -130,15 +215,11 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     delay: 60_000,
   });
 
-  /**
-   * Filter sur le Deployment courant
-   */
+  // Filter on current deployment
   const limits = React.useMemo(
     () =>
       parsePrometheus(limitResp).filter(
-        (s) =>
-          s.workload_type === 'deployment' &&
-          s.workload === deploymentName,
+        (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
       ),
     [limitResp, deploymentName],
   );
@@ -146,45 +227,36 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
   const usage = React.useMemo(
     () =>
       parsePrometheus(usageResp).filter(
-        (s) =>
-          s.workload_type === 'deployment' &&
-          s.workload === deploymentName,
+        (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
       ),
     [usageResp, deploymentName],
   );
 
-  /**
-   * Join limit + usage par container
-   */
   const rows = React.useMemo(() => {
-    const limitByContainer = new Map<string, number>();
-    limits.forEach((l) => limitByContainer.set(l.container, l.value));
+    const limitBy = new Map<string, number>();
+    limits.forEach((l) => limitBy.set(l.container, l.value));
 
-    const usageByContainer = new Map<string, number>();
-    usage.forEach((u) => usageByContainer.set(u.container, u.value));
+    const usageBy = new Map<string, number>();
+    usage.forEach((u) => usageBy.set(u.container, u.value));
 
-    const containers = Array.from(
-      new Set([
-        ...Array.from(limitByContainer.keys()),
-        ...Array.from(usageByContainer.keys()),
-      ]),
-    ).sort();
+    const containers = Array.from(new Set([...limitBy.keys(), ...usageBy.keys()])).sort();
 
     return containers.map((container) => {
-      const limitBytes = limitByContainer.get(container);
-      const usageBytes = usageByContainer.get(container);
+      const limitBytes = limitBy.get(container);
+      const usageBytes = usageBy.get(container);
 
-      const limitGiB =
-        limitBytes !== undefined ? bytesToGiB(limitBytes) : null;
-      const usageGiB =
-        usageBytes !== undefined ? bytesToGiB(usageBytes) : null;
+      const limitGiB = limitBytes !== undefined ? bytesToGiB(limitBytes) : null;
+      const usageGiB = usageBytes !== undefined ? bytesToGiB(usageBytes) : null;
 
-      return { container, limitGiB, usageGiB };
+      const ratio =
+        usageGiB !== null && limitGiB !== null && limitGiB > 0 ? usageGiB / limitGiB : null;
+
+      return { container, limitGiB, usageGiB, ratio };
     });
   }, [limits, usage]);
 
   const loading = limitLoading || usageLoading;
-  const error = limitError || usageError;
+  const hasAnyError = Boolean(limitError || usageError);
 
   return (
     <div style={{ padding: 16 }}>
@@ -194,82 +266,63 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
         Deployment <b>{deploymentName}</b> in namespace <b>{namespace}</b>
       </div>
 
-      {error && rows.length === 0 && (
+      {hasAnyError && rows.length === 0 && (
         <div style={{ color: '#c9190b', marginBottom: 12 }}>
-          Error querying Prometheus
+          Prometheus query error
         </div>
       )}
 
-      <table
-        style={{
-          width: '100%',
-          borderCollapse: 'collapse',
-          border: '1px solid #d2d2d2',
-        }}
-      >
-        <thead style={{ background: '#f5f5f5' }}>
-          <tr>
-            <th style={{ padding: 8, textAlign: 'left' }}>Container</th>
-            <th style={{ padding: 8, textAlign: 'right' }}>
-              Max memory limit (GiB)
-            </th>
-            <th style={{ padding: 8, textAlign: 'right' }}>
-              Max memory usage (7d) (GiB)
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {loading ? (
-            <tr>
-              <td colSpan={3} style={{ padding: 12 }}>
-                Loading…
-              </td>
-            </tr>
-          ) : rows.length === 0 ? (
-            <tr>
-              <td colSpan={3} style={{ padding: 12 }}>
-                No data available for this Deployment
-              </td>
-            </tr>
-          ) : (
-            rows.map((r) => {
-              const usageStyle = getUsageStyle(r.usageGiB, r.limitGiB);
+      {loading ? (
+        <div style={{ padding: 12 }}>Loading…</div>
+      ) : rows.length === 0 ? (
+        <div style={{ padding: 12 }}>No data available for this Deployment</div>
+      ) : (
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 24,
+            alignItems: 'flex-start',
+          }}
+        >
+          {rows.map((r) => {
+            const percent = r.ratio === null ? 0 : clamp01(r.ratio);
+            const color = getRatioColor(r.ratio);
+            const status = getStatusLabel(r.ratio);
 
-              return (
-                <tr key={r.container}>
-                  <td style={{ padding: 8, borderTop: '1px solid #eee' }}>
-                    {r.container || '(empty)'}
-                  </td>
-                  <td
-                    style={{
-                      padding: 8,
-                      borderTop: '1px solid #eee',
-                      textAlign: 'right',
-                    }}
-                  >
-                    {r.limitGiB !== null
-                      ? r.limitGiB.toFixed(2)
-                      : 'N/A'}
-                  </td>
-                  <td
-                    style={{
-                      padding: 8,
-                      borderTop: '1px solid #eee',
-                      textAlign: 'right',
-                      color: usageStyle.color,
-                      fontWeight: usageStyle.fontWeight,
-                    }}
-                  >
-                    {r.usageGiB !== null
-                      ? r.usageGiB.toFixed(2)
-                      : 'N/A'}
-                  </td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
+            const usageText = r.usageGiB !== null ? `${r.usageGiB.toFixed(2)} GiB` : 'N/A';
+            const limitText = r.limitGiB !== null ? `${r.limitGiB.toFixed(2)} GiB` : 'N/A';
+            const pctText = r.ratio !== null ? `${Math.round(r.ratio * 100)}%` : 'N/A';
+
+            return (
+              <div
+                key={r.container}
+                style={{
+                  border: '1px solid #d2d2d2',
+                  borderRadius: 12,
+                  padding: 18,
+                  minWidth: 340,       // 👈 bigger card
+                  background: '#fff',
+                }}
+              >
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14, color: '#151515' }}>
+                  {r.container}
+                </div>
+
+                <Donut
+                  percent={percent}
+                  color={color}
+                  usageGiBText={usageText}
+                  limitGiBText={limitText}
+                  percentText={pctText}
+                  statusText={status.text}
+                  statusColor={status.color}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

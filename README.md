@@ -28,23 +28,6 @@ Example output:
 
 ---
 
-## Plugin Added
-
-### FinOps tab on Deployment details
-
-The plugin adds a new FinOps tab available at:
-
-Workloads → Deployments → <deployment> → FinOps
-
-For each container in the Deployment, the tab displays:
-- Memory usage in GiB
-- Memory limit in GiB
-- Usage percentage
-- Status (OK / WARNING / CRITICAL)
-- A donut visualization showing usage versus limit
-
----
-
 
 ## Prerequisites
 

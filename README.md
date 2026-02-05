@@ -1,30 +1,33 @@
 # FinOps OpenShift Console Plugin
 
 ## Overview
+This project provides a custom OpenShift Console dynamic plugin that adds a FinOps tab to the Deployment details page.
 
-This project provides a custom OpenShift Console dynamic plugin that adds a **FinOps tab** to the Deployment details page.
+The FinOps tab helps visualize memory efficiency by comparing configured memory limits with actual memory usage (maximum over the last 7 days).
 
-The FinOps tab exposes **memory usage vs memory limits** for a Deployment using **Prometheus metrics**, displayed in a simple **tabular view**.
+The information is displayed using a donut visualization (usage vs limit) with clear FinOps status indicators:
+- OK: usage below 70%
+- WARNING: usage greater than or equal to 70%
+- CRITICAL: usage greater than or equal to 90%
+
+The plugin is built using the OpenShift Dynamic Plugin SDK and is deployed natively on OpenShift using BuildConfig, ImageStream, Helm and ConsolePlugin.
 
 ---
 
-## FinOps Tab (Deployment Details)
+## Plugin Added
 
-The plugin adds a new tab named **FinOps** under:
+### FinOps tab on Deployment details
 
-Workloads → Deployments → `<deployment>` → FinOps
+The plugin adds a new FinOps tab available at:
 
-The tab displays a table with the following columns:
+Workloads → Deployments → <deployment> → FinOps
 
-- **Container**  
-- **Max memory limit (GiB)**  
-- **Max memory usage over the last 7 days (GiB)**  
-
-Example output:
-
-- Container: `example-app`
-- Max memory limit: `0.50 GiB`
-- Max memory usage (7d): `0.04 GiB`
+For each container in the Deployment, the tab displays:
+- Memory usage in GiB
+- Memory limit in GiB
+- Usage percentage
+- Status (OK / WARNING / CRITICAL)
+- A donut visualization showing usage versus limit
 
 ---
 

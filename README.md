@@ -32,67 +32,53 @@ For each container in the Deployment, the tab displays:
 
 ---
 
-## Prometheus Metrics Used
-
-The dashboard relies on the following Prometheus metrics:
-- kube_pod_container_resource_limits
-- container_memory_working_set_bytes
-
-Memory usage is calculated as the maximum value over the last 7 days.
-
----
 
 ## Prerequisites
 
 Before deploying the plugin, you must have:
 - Node.js installed
-- Yarn installed
+- **Yarn** installed
+
+```bash
+  node --version
+  yarn --version
+ ```
 - Access to an OpenShift cluster
-- oc CLI installed and logged into the cluster
+- **oc CLI** installed and logged into the cluster
 - Permissions to create ImageStream, BuildConfig, Helm releases and ConsolePlugin resources
 
 You must be logged into the cluster using oc login.
 
 ---
 
-## Project Structure
-
-src/components/FinOpsTab.tsx contains the FinOps dashboard implementation  
-dist contains the built frontend assets  
-Dockerfile is used to build the plugin image  
-package.json defines the plugin metadata and version  
-helm/openshift-console-plugin contains the Helm chart used for deployment  
-
----
-
 ## Initial Deployment
 
-First, install dependencies and build the frontend assets using Yarn.
+1. Install dependencies and build the frontend assets using Yarn.
 
-Run: yarn install  
-Then run: yarn build  
-
+```bash
+yarn install  
+yarn build  
+```
 This generates the frontend bundle in the dist directory.
 
-Next, configure an ImageStream named finops-console-plugin in the namespace finops-plugin.
+2. Configure an ImageStream named finops-console-plugin in **the namespace finops-plugin**.
 
-Then configure a BuildConfig using a binary source and the Dockerfile. The BuildConfig outputs the image to the ImageStream tag finops-console-plugin:latest.
+ ```bash
+oc apply -f buildconfig/buildconfig.yaml
+oc apply -f buildconfig/imagestream.yaml
+ ```
 
-Once the ImageStream and BuildConfig are created, build and push the image to the internal OpenShift registry by running:
 
+3. Once the ImageStream and BuildConfig are created, build and push the image to the internal OpenShift registry by running:
+ ```bash
 oc -n finops-plugin start-build finops-console-plugin --from-dir=. --follow
+ ```
 
-After the image is built, deploy the plugin using Helm:
+4. Deploy the plugin using Helm:
 
+ ```bash
 helm upgrade -i finops-plugin helm/openshift-console-plugin -n finops-plugin --create-namespace --set plugin.image=image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-console-plugin:latest
-
-Then enable the plugin in the OpenShift Console by editing the Console Operator configuration:
-
-oc edit console.operator.openshift.io cluster
-
-Under spec.plugins, add finops-plugin.
-
-Save and exit.
+ ```
 
 ---
 
@@ -110,25 +96,43 @@ The FinOps dashboard should now be visible.
 
 OpenShift Console plugins are heavily cached. To update the dashboard, all the following steps are mandatory.
 
-First, modify the dashboard code in src/components/FinOpsTab.tsx.
+1. Modify the dashboard code in src/components/FinOpsTab.tsx
 
-After any frontend change, update the plugin version in package.json. Both the top-level version and consolePlugin.version must be updated. For example, change the version from 0.0.1 to 0.0.2.
+2. Update the plugin version in package.json. Example
+```json
+{
+  "version": "0.0.2",
+  "consolePlugin": {
+    "name": "finops-plugin",
+    "version": "0.0.2"
+  }
+}
+```
 
-Next, rebuild the frontend assets by running yarn build.
+3. Rebuild the frontend assets by running 
 
-Then rebuild the image using the existing BuildConfig:
+ ```bash
+yarn build
+ ```
 
+4. Rebuild the image using the existing BuildConfig:
+ ```bash
 oc -n finops-plugin start-build finops-console-plugin --from-dir=. --follow
+ ```
 
-After the build completes, tag the image with the new version to force OpenShift to detect a new image:
+5. Tag the image with the new version to force OpenShift to detect a new image:
 
+ ```bash
 oc -n finops-plugin tag finops-console-plugin:latest finops-console-plugin:0.0.2
+ ```
 
-Deploy the new image using Helm, referencing the new tag:
+6. Deploy the new image using Helm, referencing the new tag:
 
+ ```bash
 helm upgrade finops-plugin helm/openshift-console-plugin -n finops-plugin --set plugin.image=image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-console-plugin:0.0.2
+ ```
 
-Finally, force the OpenShift Console to reload by doing a hard refresh (Ctrl + Shift + R) or opening the console in a private or incognito browser window.
+7. force the OpenShift Console to reload by doing a hard refresh (Ctrl + Shift + R).
 
 ---
 
@@ -146,19 +150,9 @@ Browser cache must be cleared or bypassed to load the new frontend bundle.
 
 ---
 
-## Deployment Summary
+## Maintainer
 
-To deploy or update the FinOps plugin:
-1. Modify the frontend code
-2. Update the plugin version in package.json
-3. Run yarn build
-4. Run oc start-build
-5. Tag the image with a new version
-6. Deploy with helm upgrade
-7. Reload the OpenShift Console
+**Ikram Abdennadher**  
+OpenShift Consultant – Red Hat  
+Email: iabdenna@redhat.com
 
----
-
-## License
-
-Internal / Proof of Concept

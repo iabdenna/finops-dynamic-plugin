@@ -1,7 +1,6 @@
 # FinOps OpenShift Console Plugin
 
 ## Overview
-
 This project provides a custom OpenShift Console dynamic plugin that adds a FinOps tab to the Deployment details page.
 
 The FinOps tab helps visualize memory efficiency by comparing configured memory limits with actual memory usage (maximum over the last 7 days).

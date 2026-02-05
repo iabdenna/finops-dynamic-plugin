@@ -77,7 +77,9 @@ oc -n finops-plugin start-build finops-console-plugin --from-dir=. --follow
 4. Deploy the plugin using Helm:
 
  ```bash
-helm upgrade -i finops-plugin helm/openshift-console-plugin -n finops-plugin --create-namespace --set plugin.image=image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-console-plugin:latest
+helm upgrade finops-plugin charts/openshift-console-plugin \
+  -n finops-plugin \
+  --set plugin.image=image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-console-plugin:0.0.2
  ```
 
 ---
@@ -129,7 +131,9 @@ oc -n finops-plugin tag finops-console-plugin:latest finops-console-plugin:0.0.2
 6. Deploy the new image using Helm, referencing the new tag:
 
  ```bash
-helm upgrade finops-plugin helm/openshift-console-plugin -n finops-plugin --set plugin.image=image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-console-plugin:0.0.2
+helm upgrade finops-plugin charts/openshift-console-plugin \
+  -n finops-plugin \
+  --set plugin.image=image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-console-plugin:0.0.2
  ```
 
 7. force the OpenShift Console to reload by doing a hard refresh (Ctrl + Shift + R).

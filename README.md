@@ -5,17 +5,6 @@ This project provides a **FinOps-oriented OpenShift Console plugin** designed to
 The plugin integrates directly into the OpenShift console and displays reliable, actionable insights based on **real Prometheus metrics**, with a focus on **observed peak usage** rather than averages.
 
 ---
-
-##  Objective
-
-The main objectives of this plugin are to:
-
-- Visualize **actual memory usage vs configured limits**
-- Identify **over-reserved containers** (unused reserved memory)
-- Support **FinOps and rightsizing decisions**
-- Provide a clear, workload-centric view directly in the OpenShift console
-
----
 ## 📊 What is displayed in the OpenShift console
 
 For each container belonging to a Deployment, the plugin displays:

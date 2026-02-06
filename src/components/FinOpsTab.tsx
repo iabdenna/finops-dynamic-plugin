@@ -24,9 +24,15 @@ type Series = {
 };
 
 const buildQueries = (namespace: string) => {
+  // Max memory limit per container/workload in namespace (bytes)
   const limitQuery = `
 max by (container, namespace, workload_type, workload) (
-  kube_pod_container_resource_limits{resource="memory", namespace="${namespace}", container!=""}
+  kube_pod_container_resource_limits{
+    resource="memory",
+    namespace="${namespace}",
+    container!="",
+    container!="POD"
+  }
   * on(namespace, pod) group_left(workload, workload_type)
   namespace_workload_pod:kube_pod_owner:relabel{
     namespace="${namespace}",
@@ -35,6 +41,7 @@ max by (container, namespace, workload_type, workload) (
 )
 `.trim();
 
+  // Max memory usage over 7 days per container/workload (GiB)
   const usageQuery = `
 max by (container, namespace, workload_type, workload) (
   max_over_time(
@@ -49,7 +56,7 @@ max by (container, namespace, workload_type, workload) (
     namespace="${namespace}",
     workload_type=~"deployment|statefulset|daemonset"
   }
-)
+) / 1024^3
 `.trim();
 
   return { limitQuery, usageQuery };
@@ -61,8 +68,12 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
     .map((r) => {
       const value = Number(r?.value?.[1]);
       if (!Number.isFinite(value)) return null;
+
+      const container = r.metric?.container ?? '';
+      if (!container || container === 'POD') return null;
+
       return {
-        container: r.metric?.container ?? '',
+        container,
         workload: r.metric?.workload ?? '',
         workload_type: r.metric?.workload_type ?? '',
         value,
@@ -74,38 +85,47 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
 const bytesToGiB = (b: number) => b / (1024 ** 3);
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
-const getRatioColor = (ratio: number | null) => {
-  if (ratio === null) return '#6a6e73'; // grey
-  if (ratio >= 0.9) return '#c9190b'; // red
-  if (ratio >= 0.7) return '#f0ab00'; // orange
-  return '#3e8635'; // green
-};
+const GiB_TO_MiB = 1024;
 
-const getStatusLabel = (ratio: number | null) => {
-  if (ratio === null) return { text: 'N/A', color: '#6a6e73' };
-  if (ratio >= 0.9) return { text: 'CRITICAL', color: '#c9190b' };
-  if (ratio >= 0.7) return { text: 'WARNING', color: '#f0ab00' };
-  return { text: 'OK', color: '#3e8635' };
+const formatGiBOrMiB = (gib: number) => {
+  if (!Number.isFinite(gib)) return 'N/A';
+  const mib = gib * GiB_TO_MiB;
+
+  if (mib > 0 && mib < 1) return '<1 MiB';
+  if (gib < 0.01) return `${Math.round(mib)} MiB`;
+  return `${gib.toFixed(2)} GiB`;
 };
 
 /**
- * Bigger, clearer donut card
- * - Donut shows usage/limit
- * - Center: usage GiB
- * - Badge: percentage
- * - Below: limit GiB + status
+ * FinOps sizing label (focus: over-reservation)
+ * usageRatio = usage/limit
+ */
+const getSizingLabelFinOps = (usageRatio: number | null) => {
+  if (usageRatio === null) return { text: 'N/A', color: '#6a6e73' };
+
+  if (usageRatio < 0.2) return { text: 'Heavily over-reserved', color: '#004080' };
+  if (usageRatio < 0.4) return { text: 'Over-reserved', color: '#f0ab00' };
+  if (usageRatio < 0.8) return { text: 'Well sized', color: '#3e8635' };
+  return { text: 'At risk (close to limit)', color: '#c9190b' };
+};
+
+/**
+ * Donut card
+ * - Center: Max memory used (7d)
+ * - Badge: % used (usage/limit)
+ * - Below: Limit
  */
 const Donut: React.FC<{
-  percent: number; // 0..1
+  percent: number; // 0..1 used
+  showProgress: boolean;
   color: string;
-  usageGiBText: string;
-  limitGiBText: string;
-  percentText: string; // e.g. "65%"
-  statusText: string;
-  statusColor: string;
-}> = ({ percent, color, usageGiBText, limitGiBText, percentText, statusText, statusColor }) => {
-  const size = 200;   // 👈 larger
-  const stroke = 18;  // 👈 thicker
+  subtitleText: string;
+  valueText: string;
+  percentText: string;
+  limitText: string;
+}> = ({ percent, showProgress, color, subtitleText, valueText, percentText, limitText }) => {
+  const size = 200;
+  const stroke = 18;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const dash = c * clamp01(percent);
@@ -125,17 +145,19 @@ const Donut: React.FC<{
             strokeWidth={stroke}
           />
           {/* progress */}
-          <circle
-            cx={size / 2}
-            cy={size / 2}
-            r={r}
-            fill="none"
-            stroke={color}
-            strokeWidth={stroke}
-            strokeLinecap="round"
-            strokeDasharray={`${dash} ${gap}`}
-            transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          />
+          {showProgress && percent > 0 && (
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              fill="none"
+              stroke={color}
+              strokeWidth={stroke}
+              strokeLinecap="round"
+              strokeDasharray={`${dash} ${gap}`}
+              transform={`rotate(-90 ${size / 2} ${size / 2})`}
+            />
+          )}
         </svg>
 
         {/* center content */}
@@ -147,11 +169,17 @@ const Donut: React.FC<{
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 8,
+            gap: 6,
+            textAlign: 'center',
+            padding: '0 12px',
           }}
         >
-          <div style={{ fontSize: 28, fontWeight: 800, color: '#151515' }}>
-            {usageGiBText}
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#6a6e73', letterSpacing: 0.2 }}>
+            {subtitleText}
+          </div>
+
+          <div style={{ fontSize: 28, fontWeight: 800, color: '#151515', lineHeight: 1 }}>
+            {valueText}
           </div>
 
           <div
@@ -163,6 +191,9 @@ const Donut: React.FC<{
               color,
               fontWeight: 700,
               fontSize: 12,
+              minWidth: 64,
+              textAlign: 'center',
+              whiteSpace: 'nowrap',
             }}
           >
             {percentText}
@@ -170,26 +201,8 @@ const Donut: React.FC<{
         </div>
       </div>
 
-      {/* Bottom details */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <div style={{ fontSize: 14, color: '#6a6e73' }}>
-          Limit: <span style={{ color: '#151515', fontWeight: 700 }}>{limitGiBText}</span>
-        </div>
-
-        <div
-          style={{
-            padding: '2px 10px',
-            borderRadius: 999,
-            background: '#ffffff',
-            border: `1px solid ${statusColor}`,
-            color: statusColor,
-            fontWeight: 800,
-            fontSize: 12,
-            letterSpacing: 0.4,
-          }}
-        >
-          {statusText}
-        </div>
+      <div style={{ fontSize: 14, color: '#6a6e73' }}>
+        Limit: <span style={{ color: '#151515', fontWeight: 700 }}>{limitText}</span>
       </div>
     </div>
   );
@@ -215,43 +228,44 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     delay: 60_000,
   });
 
-  // Filter on current deployment
-  const limits = React.useMemo(
-    () =>
-      parsePrometheus(limitResp).filter(
-        (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
-      ),
-    [limitResp, deploymentName],
-  );
+  const limits = React.useMemo(() => {
+    return parsePrometheus(limitResp).filter(
+      (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
+    );
+  }, [limitResp, deploymentName]);
 
-  const usage = React.useMemo(
-    () =>
-      parsePrometheus(usageResp).filter(
-        (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
-      ),
-    [usageResp, deploymentName],
-  );
+  const usage = React.useMemo(() => {
+    return parsePrometheus(usageResp).filter(
+      (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
+    );
+  }, [usageResp, deploymentName]);
 
   const rows = React.useMemo(() => {
+    // limits: bytes
     const limitBy = new Map<string, number>();
     limits.forEach((l) => limitBy.set(l.container, l.value));
 
+    // usage: GiB
     const usageBy = new Map<string, number>();
     usage.forEach((u) => usageBy.set(u.container, u.value));
 
-    const containers = Array.from(new Set([...limitBy.keys(), ...usageBy.keys()])).sort();
+    const containers = Array.from(new Set([...limitBy.keys(), ...usageBy.keys()]))
+      .filter((c) => c && c !== 'POD')
+      .sort();
 
     return containers.map((container) => {
       const limitBytes = limitBy.get(container);
-      const usageBytes = usageBy.get(container);
+      const usageGiBFromQuery = usageBy.get(container);
 
       const limitGiB = limitBytes !== undefined ? bytesToGiB(limitBytes) : null;
-      const usageGiB = usageBytes !== undefined ? bytesToGiB(usageBytes) : null;
+      const usageGiB = usageGiBFromQuery !== undefined ? usageGiBFromQuery : null;
 
-      const ratio =
+      const usageRatio =
         usageGiB !== null && limitGiB !== null && limitGiB > 0 ? usageGiB / limitGiB : null;
 
-      return { container, limitGiB, usageGiB, ratio };
+      const overReserved = usageRatio !== null ? Math.max(0, 1 - usageRatio) : null;
+
+      return { container, limitGiB, usageGiB, usageRatio, overReserved };
     });
   }, [limits, usage]);
 
@@ -267,9 +281,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       </div>
 
       {hasAnyError && rows.length === 0 && (
-        <div style={{ color: '#c9190b', marginBottom: 12 }}>
-          Prometheus query error
-        </div>
+        <div style={{ color: '#c9190b', marginBottom: 12 }}>Prometheus query error</div>
       )}
 
       {loading ? (
@@ -277,22 +289,43 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       ) : rows.length === 0 ? (
         <div style={{ padding: 12 }}>No data available for this Deployment</div>
       ) : (
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 24,
-            alignItems: 'flex-start',
-          }}
-        >
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
           {rows.map((r) => {
-            const percent = r.ratio === null ? 0 : clamp01(r.ratio);
-            const color = getRatioColor(r.ratio);
-            const status = getStatusLabel(r.ratio);
+            const noUsage = r.usageGiB === null;
+            const noLimit = r.limitGiB === null;
 
-            const usageText = r.usageGiB !== null ? `${r.usageGiB.toFixed(2)} GiB` : 'N/A';
-            const limitText = r.limitGiB !== null ? `${r.limitGiB.toFixed(2)} GiB` : 'N/A';
-            const pctText = r.ratio !== null ? `${Math.round(r.ratio * 100)}%` : 'N/A';
+            const subtitle =
+              noUsage
+                ? 'No usage data (7d)'
+                : noLimit
+                  ? 'Max memory used (7d) • No limit set'
+                  : 'Max memory used (7d)';
+
+            const canComputeRatio = !noUsage && !noLimit && r.usageRatio !== null;
+
+            const percentUsed = canComputeRatio ? clamp01(r.usageRatio as number) : 0;
+
+            const donutColor = canComputeRatio
+              ? (r.usageRatio as number) >= 0.9
+                ? '#c9190b'
+                : (r.usageRatio as number) >= 0.7
+                  ? '#f0ab00'
+                  : '#3e8635'
+              : '#6a6e73';
+
+            const sizing = getSizingLabelFinOps(canComputeRatio ? (r.usageRatio as number) : null);
+
+            const valueText = !noUsage ? formatGiBOrMiB(r.usageGiB as number) : 'N/A';
+            const limitText = !noLimit ? formatGiBOrMiB(r.limitGiB as number) : 'N/A';
+
+            const usedPctText = canComputeRatio
+              ? `${Math.round((r.usageRatio as number) * 100)}% used`
+              : 'N/A';
+
+            const overReservedText =
+              canComputeRatio && r.overReserved !== null
+                ? `${Math.round(r.overReserved * 100)}% over-reserved`
+                : 'Over-reserved: N/A';
 
             return (
               <div
@@ -301,23 +334,53 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
                   border: '1px solid #d2d2d2',
                   borderRadius: 12,
                   padding: 18,
-                  minWidth: 340,       // 👈 bigger card
+                  width: 380,
                   background: '#fff',
                 }}
               >
                 <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14, color: '#151515' }}>
-                  {r.container}
+                  Container: {r.container}
                 </div>
 
                 <Donut
-                  percent={percent}
-                  color={color}
-                  usageGiBText={usageText}
-                  limitGiBText={limitText}
-                  percentText={pctText}
-                  statusText={status.text}
-                  statusColor={status.color}
+                  percent={percentUsed}
+                  showProgress={canComputeRatio}
+                  color={donutColor}
+                  subtitleText={subtitle}
+                  valueText={valueText}
+                  percentText={usedPctText}
+                  limitText={limitText}
                 />
+
+                {/* FinOps focus */}
+                <div
+                  style={{
+                    marginTop: 12,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                    alignItems: 'center',
+                    textAlign: 'center',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '2px 10px',
+                      borderRadius: 999,
+                      background: '#ffffff',
+                      border: `1px solid ${sizing.color}`,
+                      color: sizing.color,
+                      fontWeight: 800,
+                      fontSize: 12,
+                      letterSpacing: 0.2,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {sizing.text}
+                  </div>
+
+                  <div style={{ fontSize: 13, color: '#6a6e73' }}>{overReservedText}</div>
+                </div>
               </div>
             );
           })}

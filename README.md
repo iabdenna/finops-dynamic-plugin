@@ -1,23 +1,25 @@
-# FinOps OpenShift Console Plugin
+# OpenShift FinOps – Memory Usage Dynamic Plugin
 
-This project provides a **FinOps-oriented OpenShift Console plugin** designed to highlight **memory over-reservation** at the container level for Kubernetes workloads.
-
-The plugin integrates directly into the OpenShift console and displays reliable, actionable insights based on **real Prometheus metrics**, with a focus on **observed peak usage** rather than averages.
-
----
-## 📊 What is displayed in the OpenShift console
-
-For each container belonging to a Deployment, the plugin displays:
-
-- Maximum memory usage over the last 7 days
-- Configured memory limit
-- Percentage of memory used
-- Over-reservation status (FinOps-oriented label)
-
-The information is presented using a **donut visualization** for quick and intuitive understanding.
+This project is an **OpenShift Console dynamic plugin** that adds a **FinOps tab** to a Deployment details page.  
+It helps platform teams and developers **visualize real memory consumption** per container and identify **over-reserved memory**.
 
 ---
 
+## ✨ Features
+
+For each container in a **Deployment**, the plugin displays:
+
+- Max memory used (last 7 days) 
+  → real peak detected by Prometheus
+- Usage ratio (%)
+  → max usage compared to the configured memory limit
+- Current memory usage
+- Memory limit
+- Over-reserved percentage
+- Clean donut visualization:
+  → Green arc showing the ratio between the peak memory usage (7-day max) and the configured memory limit
+
+---
 ## Prerequisites
 
 Before deploying the plugin, you must have:

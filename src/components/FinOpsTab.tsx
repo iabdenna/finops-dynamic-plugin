@@ -18,7 +18,6 @@ type Props = {
 
 type Series = {
   container: string;
-  pod: string; // 👈 NEW (for tooltip)
   workload: string;
   workload_type: string;
   value: number;
@@ -42,13 +41,9 @@ max by (container, namespace, workload_type, workload) (
 )
 `.trim();
 
-  // Max memory usage over 7 days per container/workload in namespace (GiB),
-  // AND keep the "winner pod" label per (container,workload) group.
-  //
-  // IMPORTANT: `topk by (...) (1, <vector>)` returns the top1 series per group,
-  // preserving the original labels of that winning series (including `pod`).
+  // Max memory usage over 7 days per container/workload (GiB)
   const usageQuery = `
-topk by (container, namespace, workload_type, workload) (1,
+max by (container, namespace, workload_type, workload) (
   max_over_time(
     container_memory_working_set_bytes{
       namespace="${namespace}",
@@ -75,14 +70,10 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
       if (!Number.isFinite(value)) return null;
 
       const container = r.metric?.container ?? '';
-      const pod = r.metric?.pod ?? '';
-
-      // extra safety: avoid empty / POD containers
       if (!container || container === 'POD') return null;
 
       return {
         container,
-        pod,
         workload: r.metric?.workload ?? '',
         workload_type: r.metric?.workload_type ?? '',
         value,
@@ -94,51 +85,45 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
 const bytesToGiB = (b: number) => b / (1024 ** 3);
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 
-const getRatioColor = (ratio: number | null) => {
-  if (ratio === null) return '#6a6e73'; // grey
-  if (ratio >= 0.9) return '#c9190b'; // red
-  if (ratio >= 0.7) return '#f0ab00'; // orange
-  return '#3e8635'; // green
+const GiB_TO_MiB = 1024;
+
+const formatGiBOrMiB = (gib: number) => {
+  if (!Number.isFinite(gib)) return 'N/A';
+  const mib = gib * GiB_TO_MiB;
+
+  if (mib > 0 && mib < 1) return '<1 MiB';
+  if (gib < 0.01) return `${Math.round(mib)} MiB`;
+  return `${gib.toFixed(2)} GiB`;
 };
 
-const getStatusLabel = (ratio: number | null) => {
-  if (ratio === null) return { text: 'N/A', color: '#6a6e73' };
-  if (ratio >= 0.9) return { text: 'CRITICAL', color: '#c9190b' };
-  if (ratio >= 0.7) return { text: 'WARNING', color: '#f0ab00' };
-  return { text: 'OK', color: '#3e8635' };
+/**
+ * FinOps sizing label (focus: over-reservation)
+ * usageRatio = usage/limit
+ */
+const getSizingLabelFinOps = (usageRatio: number | null) => {
+  if (usageRatio === null) return { text: 'N/A', color: '#6a6e73' };
+
+  if (usageRatio < 0.2) return { text: 'Heavily over-reserved', color: '#004080' };
+  if (usageRatio < 0.4) return { text: 'Over-reserved', color: '#f0ab00' };
+  if (usageRatio < 0.8) return { text: 'Well sized', color: '#3e8635' };
+  return { text: 'At risk (close to limit)', color: '#c9190b' };
 };
 
 /**
  * Donut card
- * - Center label: "Max memory used (7d)"
- * - Center value: usage (GiB) OR N/A
- * - Percentage shown only when usage + limit exist
- * - Progress arc hidden when ratio not available (avoids the "dot" effect)
- * - Tooltip shows winner pod name (ultra clean)
+ * - Center: Max memory used (7d)
+ * - Badge: % used (usage/limit)
+ * - Below: Limit
  */
 const Donut: React.FC<{
-  percent: number; // 0..1
+  percent: number; // 0..1 used
   showProgress: boolean;
   color: string;
   subtitleText: string;
   valueText: string;
   percentText: string;
   limitText: string;
-  statusText: string;
-  statusColor: string;
-  tooltip: string; // 👈 NEW
-}> = ({
-  percent,
-  showProgress,
-  color,
-  subtitleText,
-  valueText,
-  percentText,
-  limitText,
-  statusText,
-  statusColor,
-  tooltip,
-}) => {
+}> = ({ percent, showProgress, color, subtitleText, valueText, percentText, limitText }) => {
   const size = 200;
   const stroke = 18;
   const r = (size - stroke) / 2;
@@ -147,10 +132,7 @@ const Donut: React.FC<{
   const gap = c - dash;
 
   return (
-    <div
-      title={tooltip}
-      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}
-    >
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
       <div style={{ position: 'relative', width: size, height: size }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
           {/* track */}
@@ -162,7 +144,6 @@ const Donut: React.FC<{
             stroke="#d2d2d2"
             strokeWidth={stroke}
           />
-
           {/* progress */}
           {showProgress && percent > 0 && (
             <circle
@@ -210,10 +191,9 @@ const Donut: React.FC<{
               color,
               fontWeight: 700,
               fontSize: 12,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              minWidth: 44,
+              minWidth: 64,
+              textAlign: 'center',
+              whiteSpace: 'nowrap',
             }}
           >
             {percentText}
@@ -221,26 +201,8 @@ const Donut: React.FC<{
         </div>
       </div>
 
-      {/* Bottom details */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <div style={{ fontSize: 14, color: '#6a6e73' }}>
-          Limit: <span style={{ color: '#151515', fontWeight: 700 }}>{limitText}</span>
-        </div>
-
-        <div
-          style={{
-            padding: '2px 10px',
-            borderRadius: 999,
-            background: '#ffffff',
-            border: `1px solid ${statusColor}`,
-            color: statusColor,
-            fontWeight: 800,
-            fontSize: 12,
-            letterSpacing: 0.4,
-          }}
-        >
-          {statusText}
-        </div>
+      <div style={{ fontSize: 14, color: '#6a6e73' }}>
+        Limit: <span style={{ color: '#151515', fontWeight: 700 }}>{limitText}</span>
       </div>
     </div>
   );
@@ -266,7 +228,6 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     delay: 60_000,
   });
 
-  // Filter on current deployment
   const limits = React.useMemo(() => {
     return parsePrometheus(limitResp).filter(
       (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
@@ -284,9 +245,9 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     const limitBy = new Map<string, number>();
     limits.forEach((l) => limitBy.set(l.container, l.value));
 
-    // usage: GiB (query already / 1024^3) + pod label
-    const usageBy = new Map<string, { gib: number; pod: string }>();
-    usage.forEach((u) => usageBy.set(u.container, { gib: u.value, pod: u.pod }));
+    // usage: GiB
+    const usageBy = new Map<string, number>();
+    usage.forEach((u) => usageBy.set(u.container, u.value));
 
     const containers = Array.from(new Set([...limitBy.keys(), ...usageBy.keys()]))
       .filter((c) => c && c !== 'POD')
@@ -294,16 +255,17 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
 
     return containers.map((container) => {
       const limitBytes = limitBy.get(container);
-      const usageEntry = usageBy.get(container);
+      const usageGiBFromQuery = usageBy.get(container);
 
       const limitGiB = limitBytes !== undefined ? bytesToGiB(limitBytes) : null;
-      const usageGiB = usageEntry ? usageEntry.gib : null;
-      const pod = usageEntry?.pod ?? '';
+      const usageGiB = usageGiBFromQuery !== undefined ? usageGiBFromQuery : null;
 
-      const ratio =
+      const usageRatio =
         usageGiB !== null && limitGiB !== null && limitGiB > 0 ? usageGiB / limitGiB : null;
 
-      return { container, limitGiB, usageGiB, ratio, pod };
+      const overReserved = usageRatio !== null ? Math.max(0, 1 - usageRatio) : null;
+
+      return { container, limitGiB, usageGiB, usageRatio, overReserved };
     });
   }, [limits, usage]);
 
@@ -339,22 +301,31 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
                   ? 'Max memory used (7d) • No limit set'
                   : 'Max memory used (7d)';
 
-            const canComputeRatio = !noUsage && !noLimit && r.ratio !== null;
+            const canComputeRatio = !noUsage && !noLimit && r.usageRatio !== null;
 
-            const percent = canComputeRatio ? clamp01(r.ratio as number) : 0;
-            const color = getRatioColor(canComputeRatio ? (r.ratio as number) : null);
-            const status = getStatusLabel(canComputeRatio ? (r.ratio as number) : null);
+            const percentUsed = canComputeRatio ? clamp01(r.usageRatio as number) : 0;
 
-            const valueText = !noUsage ? `${(r.usageGiB as number).toFixed(2)} GiB` : 'N/A';
-            const limitText = !noLimit ? `${(r.limitGiB as number).toFixed(2)} GiB` : 'N/A';
-            const percentText = canComputeRatio ? `${Math.round((r.ratio as number) * 100)}%` : 'N/A';
+            const donutColor = canComputeRatio
+              ? (r.usageRatio as number) >= 0.9
+                ? '#c9190b'
+                : (r.usageRatio as number) >= 0.7
+                  ? '#f0ab00'
+                  : '#3e8635'
+              : '#6a6e73';
 
-            const tooltipLines: string[] = [];
-            tooltipLines.push('Max memory used over last 7 days');
-            tooltipLines.push(`Container: ${r.container}`);
-            if (r.pod) tooltipLines.push(`Pod: ${r.pod}`);
-            if (!r.pod && !noUsage) tooltipLines.push('Pod: (not available)');
-            const tooltip = tooltipLines.join('\n');
+            const sizing = getSizingLabelFinOps(canComputeRatio ? (r.usageRatio as number) : null);
+
+            const valueText = !noUsage ? formatGiBOrMiB(r.usageGiB as number) : 'N/A';
+            const limitText = !noLimit ? formatGiBOrMiB(r.limitGiB as number) : 'N/A';
+
+            const usedPctText = canComputeRatio
+              ? `${Math.round((r.usageRatio as number) * 100)}% used`
+              : 'N/A';
+
+            const overReservedText =
+              canComputeRatio && r.overReserved !== null
+                ? `${Math.round(r.overReserved * 100)}% over-reserved`
+                : 'Over-reserved: N/A';
 
             return (
               <div
@@ -363,26 +334,53 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
                   border: '1px solid #d2d2d2',
                   borderRadius: 12,
                   padding: 18,
-                  minWidth: 340,
+                  width: 380,
                   background: '#fff',
                 }}
               >
                 <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14, color: '#151515' }}>
-                  {r.container}
+                  Container: {r.container}
                 </div>
 
                 <Donut
-                  percent={percent}
+                  percent={percentUsed}
                   showProgress={canComputeRatio}
-                  color={color}
+                  color={donutColor}
                   subtitleText={subtitle}
                   valueText={valueText}
-                  percentText={percentText}
+                  percentText={usedPctText}
                   limitText={limitText}
-                  statusText={status.text}
-                  statusColor={status.color}
-                  tooltip={tooltip}
                 />
+
+                {/* FinOps focus */}
+                <div
+                  style={{
+                    marginTop: 12,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                    alignItems: 'center',
+                    textAlign: 'center',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '2px 10px',
+                      borderRadius: 999,
+                      background: '#ffffff',
+                      border: `1px solid ${sizing.color}`,
+                      color: sizing.color,
+                      fontWeight: 800,
+                      fontSize: 12,
+                      letterSpacing: 0.2,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {sizing.text}
+                  </div>
+
+                  <div style={{ fontSize: 13, color: '#6a6e73' }}>{overReservedText}</div>
+                </div>
               </div>
             );
           })}

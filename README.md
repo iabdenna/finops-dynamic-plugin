@@ -1,36 +1,33 @@
 # FinOps OpenShift Console Plugin
 
-## Overview
-This project provides a custom OpenShift Console dynamic plugin that adds a FinOps tab to the Deployment details page.
+This project provides a **FinOps-oriented OpenShift Console plugin** designed to highlight **memory over-reservation** at the container level for Kubernetes workloads.
 
-The FinOps tab helps visualize memory efficiency by comparing configured memory limits with actual memory usage (maximum over the last 7 days).
-
-The information is displayed using a donut visualization (usage vs limit) with clear FinOps status indicators:
-- OK: usage below 70%
-- WARNING: usage greater than or equal to 70%
-- CRITICAL: usage greater than or equal to 90%
-
-The plugin is built using the OpenShift Dynamic Plugin SDK and is deployed natively on OpenShift using BuildConfig, ImageStream, Helm and ConsolePlugin.
+The plugin integrates directly into the OpenShift console and displays reliable, actionable insights based on **real Prometheus metrics**, with a focus on **observed peak usage** rather than averages.
 
 ---
 
-## Plugin Added
+##  Objective
 
-### FinOps tab on Deployment details
+The main objectives of this plugin are to:
 
-The plugin adds a new FinOps tab available at:
-
-Workloads → Deployments → <deployment> → FinOps
-
-For each container in the Deployment, the tab displays:
-- Memory usage in GiB
-- Memory limit in GiB
-- Usage percentage
-- Status (OK / WARNING / CRITICAL)
-- A donut visualization showing usage versus limit
+- Visualize **actual memory usage vs configured limits**
+- Identify **over-reserved containers** (unused reserved memory)
+- Support **FinOps and rightsizing decisions**
+- Provide a clear, workload-centric view directly in the OpenShift console
 
 ---
+## 📊 What is displayed in the OpenShift console
 
+For each container belonging to a Deployment, the plugin displays:
+
+- Maximum memory usage over the last 7 days
+- Configured memory limit
+- Percentage of memory used
+- Over-reservation status (FinOps-oriented label)
+
+The information is presented using a **donut visualization** for quick and intuitive understanding.
+
+---
 
 ## Prerequisites
 

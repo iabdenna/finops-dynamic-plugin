@@ -95,7 +95,7 @@ max by (container) (
 /**
  * Donut:
  * - Center shows Max memory used (7d)
- * - Badge shows % used (max7d/limit) if limit exists
+ * - Badge shows % used (max7d/limit) if limit exists, else "No limit"
  * - Green dot when ratio is 0 and limit exists
  * - Bottom: Limit, Current, Over-reserved
  */
@@ -254,10 +254,20 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     const currentBy = new Map<string, number>();
     current.forEach((s) => currentBy.set(s.container, s.value));
 
-    // ✅ Show a container if it has real usage metrics (current OR max7d),
-    // even if usage is 0. This keeps running sidecars at 0.00 GiB.
-    // Containers that never ran (no usage metrics) will not be shown.
-    const containers = Array.from(new Set([...maxBy.keys(), ...currentBy.keys()]))
+    /**
+     * ✅ Display rule (fix for "ghost" containers):
+     * - show if CURRENT exists (even if 0.00 GiB) -> keeps running sidecars like dummy-sidecar
+     * - OR show if MAX7D is strictly > 0.00 GiB -> keeps containers that had real historical usage
+     * - hide: current missing + max7d == 0 (typical never-ran / irrelevant containers)
+     */
+    const containers = Array.from(
+      new Set([
+        ...Array.from(currentBy.keys()),
+        ...Array.from(maxBy.entries())
+          .filter(([, v]) => Number.isFinite(v) && v > 0)
+          .map(([c]) => c),
+      ]),
+    )
       .filter((c) => c && c !== 'POD')
       .sort();
 

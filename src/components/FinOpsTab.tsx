@@ -18,15 +18,22 @@ type Props = {
 
 type Series = {
   container: string;
+  pod: string; // 👈 NEW (for tooltip)
   workload: string;
   workload_type: string;
   value: number;
 };
 
 const buildQueries = (namespace: string) => {
+  // Max memory limit per container/workload in namespace (bytes)
   const limitQuery = `
 max by (container, namespace, workload_type, workload) (
-  kube_pod_container_resource_limits{resource="memory", namespace="${namespace}", container!=""}
+  kube_pod_container_resource_limits{
+    resource="memory",
+    namespace="${namespace}",
+    container!="",
+    container!="POD"
+  }
   * on(namespace, pod) group_left(workload, workload_type)
   namespace_workload_pod:kube_pod_owner:relabel{
     namespace="${namespace}",
@@ -35,8 +42,13 @@ max by (container, namespace, workload_type, workload) (
 )
 `.trim();
 
+  // Max memory usage over 7 days per container/workload in namespace (GiB),
+  // AND keep the "winner pod" label per (container,workload) group.
+  //
+  // IMPORTANT: `topk by (...) (1, <vector>)` returns the top1 series per group,
+  // preserving the original labels of that winning series (including `pod`).
   const usageQuery = `
-max by (container, namespace, workload_type, workload) (
+topk by (container, namespace, workload_type, workload) (1,
   max_over_time(
     container_memory_working_set_bytes{
       namespace="${namespace}",
@@ -49,7 +61,7 @@ max by (container, namespace, workload_type, workload) (
     namespace="${namespace}",
     workload_type=~"deployment|statefulset|daemonset"
   }
-)
+) / 1024^3
 `.trim();
 
   return { limitQuery, usageQuery };
@@ -61,8 +73,16 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
     .map((r) => {
       const value = Number(r?.value?.[1]);
       if (!Number.isFinite(value)) return null;
+
+      const container = r.metric?.container ?? '';
+      const pod = r.metric?.pod ?? '';
+
+      // extra safety: avoid empty / POD containers
+      if (!container || container === 'POD') return null;
+
       return {
-        container: r.metric?.container ?? '',
+        container,
+        pod,
         workload: r.metric?.workload ?? '',
         workload_type: r.metric?.workload_type ?? '',
         value,
@@ -89,30 +109,48 @@ const getStatusLabel = (ratio: number | null) => {
 };
 
 /**
- * Bigger, clearer donut card
- * - Donut shows usage/limit
- * - Center: usage GiB
- * - Badge: percentage
- * - Below: limit GiB + status
+ * Donut card
+ * - Center label: "Max memory used (7d)"
+ * - Center value: usage (GiB) OR N/A
+ * - Percentage shown only when usage + limit exist
+ * - Progress arc hidden when ratio not available (avoids the "dot" effect)
+ * - Tooltip shows winner pod name (ultra clean)
  */
 const Donut: React.FC<{
   percent: number; // 0..1
+  showProgress: boolean;
   color: string;
-  usageGiBText: string;
-  limitGiBText: string;
-  percentText: string; // e.g. "65%"
+  subtitleText: string;
+  valueText: string;
+  percentText: string;
+  limitText: string;
   statusText: string;
   statusColor: string;
-}> = ({ percent, color, usageGiBText, limitGiBText, percentText, statusText, statusColor }) => {
-  const size = 200;   // 👈 larger
-  const stroke = 18;  // 👈 thicker
+  tooltip: string; // 👈 NEW
+}> = ({
+  percent,
+  showProgress,
+  color,
+  subtitleText,
+  valueText,
+  percentText,
+  limitText,
+  statusText,
+  statusColor,
+  tooltip,
+}) => {
+  const size = 200;
+  const stroke = 18;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const dash = c * clamp01(percent);
   const gap = c - dash;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+    <div
+      title={tooltip}
+      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}
+    >
       <div style={{ position: 'relative', width: size, height: size }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
           {/* track */}
@@ -124,18 +162,21 @@ const Donut: React.FC<{
             stroke="#d2d2d2"
             strokeWidth={stroke}
           />
+
           {/* progress */}
-          <circle
-            cx={size / 2}
-            cy={size / 2}
-            r={r}
-            fill="none"
-            stroke={color}
-            strokeWidth={stroke}
-            strokeLinecap="round"
-            strokeDasharray={`${dash} ${gap}`}
-            transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          />
+          {showProgress && percent > 0 && (
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              fill="none"
+              stroke={color}
+              strokeWidth={stroke}
+              strokeLinecap="round"
+              strokeDasharray={`${dash} ${gap}`}
+              transform={`rotate(-90 ${size / 2} ${size / 2})`}
+            />
+          )}
         </svg>
 
         {/* center content */}
@@ -147,11 +188,17 @@ const Donut: React.FC<{
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 8,
+            gap: 6,
+            textAlign: 'center',
+            padding: '0 12px',
           }}
         >
-          <div style={{ fontSize: 28, fontWeight: 800, color: '#151515' }}>
-            {usageGiBText}
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#6a6e73', letterSpacing: 0.2 }}>
+            {subtitleText}
+          </div>
+
+          <div style={{ fontSize: 28, fontWeight: 800, color: '#151515', lineHeight: 1 }}>
+            {valueText}
           </div>
 
           <div
@@ -163,6 +210,10 @@ const Donut: React.FC<{
               color,
               fontWeight: 700,
               fontSize: 12,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: 44,
             }}
           >
             {percentText}
@@ -173,7 +224,7 @@ const Donut: React.FC<{
       {/* Bottom details */}
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
         <div style={{ fontSize: 14, color: '#6a6e73' }}>
-          Limit: <span style={{ color: '#151515', fontWeight: 700 }}>{limitGiBText}</span>
+          Limit: <span style={{ color: '#151515', fontWeight: 700 }}>{limitText}</span>
         </div>
 
         <div
@@ -216,42 +267,43 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
   });
 
   // Filter on current deployment
-  const limits = React.useMemo(
-    () =>
-      parsePrometheus(limitResp).filter(
-        (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
-      ),
-    [limitResp, deploymentName],
-  );
+  const limits = React.useMemo(() => {
+    return parsePrometheus(limitResp).filter(
+      (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
+    );
+  }, [limitResp, deploymentName]);
 
-  const usage = React.useMemo(
-    () =>
-      parsePrometheus(usageResp).filter(
-        (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
-      ),
-    [usageResp, deploymentName],
-  );
+  const usage = React.useMemo(() => {
+    return parsePrometheus(usageResp).filter(
+      (s) => s.workload_type === 'deployment' && s.workload === deploymentName,
+    );
+  }, [usageResp, deploymentName]);
 
   const rows = React.useMemo(() => {
+    // limits: bytes
     const limitBy = new Map<string, number>();
     limits.forEach((l) => limitBy.set(l.container, l.value));
 
-    const usageBy = new Map<string, number>();
-    usage.forEach((u) => usageBy.set(u.container, u.value));
+    // usage: GiB (query already / 1024^3) + pod label
+    const usageBy = new Map<string, { gib: number; pod: string }>();
+    usage.forEach((u) => usageBy.set(u.container, { gib: u.value, pod: u.pod }));
 
-    const containers = Array.from(new Set([...limitBy.keys(), ...usageBy.keys()])).sort();
+    const containers = Array.from(new Set([...limitBy.keys(), ...usageBy.keys()]))
+      .filter((c) => c && c !== 'POD')
+      .sort();
 
     return containers.map((container) => {
       const limitBytes = limitBy.get(container);
-      const usageBytes = usageBy.get(container);
+      const usageEntry = usageBy.get(container);
 
       const limitGiB = limitBytes !== undefined ? bytesToGiB(limitBytes) : null;
-      const usageGiB = usageBytes !== undefined ? bytesToGiB(usageBytes) : null;
+      const usageGiB = usageEntry ? usageEntry.gib : null;
+      const pod = usageEntry?.pod ?? '';
 
       const ratio =
         usageGiB !== null && limitGiB !== null && limitGiB > 0 ? usageGiB / limitGiB : null;
 
-      return { container, limitGiB, usageGiB, ratio };
+      return { container, limitGiB, usageGiB, ratio, pod };
     });
   }, [limits, usage]);
 
@@ -267,9 +319,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       </div>
 
       {hasAnyError && rows.length === 0 && (
-        <div style={{ color: '#c9190b', marginBottom: 12 }}>
-          Prometheus query error
-        </div>
+        <div style={{ color: '#c9190b', marginBottom: 12 }}>Prometheus query error</div>
       )}
 
       {loading ? (
@@ -277,22 +327,34 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       ) : rows.length === 0 ? (
         <div style={{ padding: 12 }}>No data available for this Deployment</div>
       ) : (
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 24,
-            alignItems: 'flex-start',
-          }}
-        >
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
           {rows.map((r) => {
-            const percent = r.ratio === null ? 0 : clamp01(r.ratio);
-            const color = getRatioColor(r.ratio);
-            const status = getStatusLabel(r.ratio);
+            const noUsage = r.usageGiB === null;
+            const noLimit = r.limitGiB === null;
 
-            const usageText = r.usageGiB !== null ? `${r.usageGiB.toFixed(2)} GiB` : 'N/A';
-            const limitText = r.limitGiB !== null ? `${r.limitGiB.toFixed(2)} GiB` : 'N/A';
-            const pctText = r.ratio !== null ? `${Math.round(r.ratio * 100)}%` : 'N/A';
+            const subtitle =
+              noUsage
+                ? 'No usage data (7d)'
+                : noLimit
+                  ? 'Max memory used (7d) • No limit set'
+                  : 'Max memory used (7d)';
+
+            const canComputeRatio = !noUsage && !noLimit && r.ratio !== null;
+
+            const percent = canComputeRatio ? clamp01(r.ratio as number) : 0;
+            const color = getRatioColor(canComputeRatio ? (r.ratio as number) : null);
+            const status = getStatusLabel(canComputeRatio ? (r.ratio as number) : null);
+
+            const valueText = !noUsage ? `${(r.usageGiB as number).toFixed(2)} GiB` : 'N/A';
+            const limitText = !noLimit ? `${(r.limitGiB as number).toFixed(2)} GiB` : 'N/A';
+            const percentText = canComputeRatio ? `${Math.round((r.ratio as number) * 100)}%` : 'N/A';
+
+            const tooltipLines: string[] = [];
+            tooltipLines.push('Max memory used over last 7 days');
+            tooltipLines.push(`Container: ${r.container}`);
+            if (r.pod) tooltipLines.push(`Pod: ${r.pod}`);
+            if (!r.pod && !noUsage) tooltipLines.push('Pod: (not available)');
+            const tooltip = tooltipLines.join('\n');
 
             return (
               <div
@@ -301,7 +363,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
                   border: '1px solid #d2d2d2',
                   borderRadius: 12,
                   padding: 18,
-                  minWidth: 340,       // 👈 bigger card
+                  minWidth: 340,
                   background: '#fff',
                 }}
               >
@@ -311,12 +373,15 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
 
                 <Donut
                   percent={percent}
+                  showProgress={canComputeRatio}
                   color={color}
-                  usageGiBText={usageText}
-                  limitGiBText={limitText}
-                  percentText={pctText}
+                  subtitleText={subtitle}
+                  valueText={valueText}
+                  percentText={percentText}
+                  limitText={limitText}
                   statusText={status.text}
                   statusColor={status.color}
+                  tooltip={tooltip}
                 />
               </div>
             );

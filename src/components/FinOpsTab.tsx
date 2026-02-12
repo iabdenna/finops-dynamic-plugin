@@ -6,6 +6,7 @@ import {
 } from '@openshift-console/dynamic-plugin-sdk';
 
 type K8sObject = {
+  kind?: string;
   metadata?: {
     name?: string;
     namespace?: string;
@@ -47,11 +48,12 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * Queries filtered to the current Deployment only (pod regex: <deployment>-.*).
+ * Queries filtered to the current workload only (pod regex: <name>-.*).
+ * Works for Deployment, StatefulSet, DaemonSet.
  * Values returned in GiB.
  */
-const buildQueries = (namespace: string, deploymentName: string) => {
-  const podRegex = `${escapeRegex(deploymentName)}-.*`;
+const buildQueries = (namespace: string, workloadName: string) => {
+  const podRegex = `${escapeRegex(workloadName)}-.*`;
 
   const max7dQuery = `
 max by (container) (
@@ -77,7 +79,6 @@ max by (container) (
 ) / 1024^3
 `.trim();
 
-  // ✅ REQUEST (memory) instead of LIMIT (memory)
   const requestQuery = `
 max by (container) (
   kube_pod_container_resource_requests{
@@ -93,7 +94,7 @@ max by (container) (
   return { max7dQuery, currentQuery, requestQuery };
 };
 
-// PatternFly / OpenShift console theme tokens (work in light + dark)
+// Theme tokens from OpenShift console (PatternFly CSS vars provided by console)
 const TOKENS = {
   bgCard: 'var(--pf-v5-global--BackgroundColor--100)',
   border: 'var(--pf-v5-global--BorderColor--100)',
@@ -101,17 +102,9 @@ const TOKENS = {
   textSecondary: 'var(--pf-v5-global--Color--200)',
   badgeBg: 'var(--pf-v5-global--BackgroundColor--200)',
   track: 'var(--pf-v5-global--BorderColor--200)',
+  success: 'var(--pf-v5-global--success-color--100)',
 };
 
-const GREEN = '#3E8635';
-
-/**
- * Donut:
- * - Center shows Max memory used (7d)
- * - Badge shows % used (max7d/request) if request exists, else "No request"
- * - Green dot when ratio is 0 and request exists
- * - Bottom: Request, Current, Over-reserved
- */
 const Donut: React.FC<{
   usedRatio: number | null; // max7d/request
   maxText: string;
@@ -147,7 +140,7 @@ const Donut: React.FC<{
 
           {/* green dot for 0 consumption (only meaningful when request exists) */}
           {showProgress && ratio === 0 && (
-            <circle cx={size / 2} cy={stroke / 2} r={6} fill={GREEN} />
+            <circle cx={size / 2} cy={stroke / 2} r={6} fill={TOKENS.success} />
           )}
 
           {/* progress (green) */}
@@ -157,7 +150,7 @@ const Donut: React.FC<{
               cy={size / 2}
               r={r}
               fill="none"
-              stroke={GREEN}
+              stroke={TOKENS.success}
               strokeWidth={stroke}
               strokeLinecap="round"
               strokeDasharray={`${dash} ${gap}`}
@@ -194,7 +187,7 @@ const Donut: React.FC<{
               padding: '4px 10px',
               borderRadius: 999,
               background: TOKENS.badgeBg,
-              border: hasRequest ? `1px solid ${GREEN}` : `1px solid ${TOKENS.border}`,
+              border: hasRequest ? `1px solid ${TOKENS.success}` : `1px solid ${TOKENS.border}`,
               color: TOKENS.text,
               fontWeight: 700,
               fontSize: 12,
@@ -226,11 +219,12 @@ const Donut: React.FC<{
 
 const FinOpsTab: React.FC<Props> = ({ obj }) => {
   const namespace = obj?.metadata?.namespace ?? '';
-  const deploymentName = obj?.metadata?.name ?? '';
+  const workloadName = obj?.metadata?.name ?? '';
+  const kind = obj?.kind ?? 'Workload';
 
   const { max7dQuery, currentQuery, requestQuery } = React.useMemo(
-    () => buildQueries(namespace, deploymentName),
-    [namespace, deploymentName],
+    () => buildQueries(namespace, workloadName),
+    [namespace, workloadName],
   );
 
   const [requestResp, requestError, requestLoading] = usePrometheusPoll({
@@ -290,7 +284,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       const currentGiB = currentBy.get(container) ?? null;
 
       const hasRequest = requestGiB !== null && requestGiB > 0;
-      const usedRatio = hasRequest && maxGiB !== null ? maxGiB / (requestGiB as number) : null;
+      const usedRatio = hasRequest && maxGiB !== null ? maxGiB / requestGiB : null;
 
       const overReservedRatio =
         usedRatio !== null && Number.isFinite(usedRatio) ? Math.max(0, 1 - usedRatio) : null;
@@ -318,7 +312,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       <h2 style={{ marginTop: 0, color: TOKENS.text }}>FinOps</h2>
 
       <div style={{ color: TOKENS.textSecondary, marginBottom: 12 }}>
-        Deployment <b style={{ color: TOKENS.text }}>{deploymentName}</b> in namespace{' '}
+        {kind} <b style={{ color: TOKENS.text }}>{workloadName}</b> in namespace{' '}
         <b style={{ color: TOKENS.text }}>{namespace}</b>
       </div>
 
@@ -332,7 +326,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
         <div style={{ padding: 12, color: TOKENS.textSecondary }}>Loading…</div>
       ) : rows.length === 0 ? (
         <div style={{ padding: 12, color: TOKENS.textSecondary }}>
-          No data available for this Deployment
+          No data available for this workload
         </div>
       ) : (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>

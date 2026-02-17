@@ -5,6 +5,8 @@ import {
   type PrometheusResponse,
 } from '@openshift-console/dynamic-plugin-sdk';
 
+import settings from '../finops-settings.json';
+
 type K8sObject = {
   kind?: string;
   metadata?: {
@@ -21,6 +23,8 @@ type Series = {
   container: string;
   value: number; // GiB
 };
+
+/* ================= Utilities ================= */
 
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 const pct = (x: number) => Math.round(x * 100);
@@ -47,11 +51,8 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/**
- * Queries filtered to the current workload only (pod regex: <name>-.*).
- * Works for Deployment, StatefulSet, DaemonSet.
- * Values returned in GiB.
- */
+/* ================= Prometheus Queries ================= */
+
 const buildQueries = (namespace: string, workloadName: string) => {
   const podRegex = `${escapeRegex(workloadName)}-.*`;
 
@@ -94,7 +95,8 @@ max by (container) (
   return { max7dQuery, currentQuery, requestQuery };
 };
 
-// Theme tokens from OpenShift console (PatternFly CSS vars provided by console)
+/* ================= Theme Tokens ================= */
+
 const TOKENS = {
   bgCard: 'var(--pf-v5-global--BackgroundColor--100)',
   border: 'var(--pf-v5-global--BorderColor--100)',
@@ -102,11 +104,33 @@ const TOKENS = {
   textSecondary: 'var(--pf-v5-global--Color--200)',
   badgeBg: 'var(--pf-v5-global--BackgroundColor--200)',
   track: 'var(--pf-v5-global--BorderColor--200)',
-  success: 'var(--pf-v5-global--success-color--100)',
 };
 
+/* ================= Color Logic (from JSON) ================= */
+
+const getDonutColor = (
+  usedRatio: number | null,
+  hasRequest: boolean,
+): string => {
+  if (!hasRequest || usedRatio === null || !Number.isFinite(usedRatio)) {
+    return settings.colors.green;
+  }
+
+  if (!settings.enableThresholdColors) {
+    return settings.colors.green;
+  }
+
+  const r = clamp01(usedRatio);
+
+  if (r < settings.thresholds.redBelow) return settings.colors.red;
+  if (r < settings.thresholds.yellowBelow) return settings.colors.yellow;
+  return settings.colors.green;
+};
+
+/* ================= Donut Component ================= */
+
 const Donut: React.FC<{
-  usedRatio: number | null; // max7d/request
+  usedRatio: number | null;
   maxText: string;
   currentText: string;
   requestText: string;
@@ -124,11 +148,12 @@ const Donut: React.FC<{
   const dash = c * ratio;
   const gap = c - dash;
 
+  const donutColor = getDonutColor(usedRatio, hasRequest);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
       <div style={{ position: 'relative', width: size, height: size }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-          {/* track */}
           <circle
             cx={size / 2}
             cy={size / 2}
@@ -138,19 +163,17 @@ const Donut: React.FC<{
             strokeWidth={stroke}
           />
 
-          {/* green dot for 0 consumption (only meaningful when request exists) */}
           {showProgress && ratio === 0 && (
-            <circle cx={size / 2} cy={stroke / 2} r={6} fill={TOKENS.success} />
+            <circle cx={size / 2} cy={stroke / 2} r={6} fill={donutColor} />
           )}
 
-          {/* progress (green) */}
           {showProgress && ratio > 0 && (
             <circle
               cx={size / 2}
               cy={size / 2}
               r={r}
               fill="none"
-              stroke={TOKENS.success}
+              stroke={donutColor}
               strokeWidth={stroke}
               strokeLinecap="round"
               strokeDasharray={`${dash} ${gap}`}
@@ -159,7 +182,6 @@ const Donut: React.FC<{
           )}
         </svg>
 
-        {/* center */}
         <div
           style={{
             position: 'absolute',
@@ -174,11 +196,11 @@ const Donut: React.FC<{
             color: TOKENS.text,
           }}
         >
-          <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.textSecondary, letterSpacing: 0.2 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: TOKENS.textSecondary }}>
             Max memory used (7d)
           </div>
 
-          <div style={{ fontSize: 28, fontWeight: 800, color: TOKENS.text, lineHeight: 1 }}>
+          <div style={{ fontSize: 28, fontWeight: 800 }}>
             {maxText}
           </div>
 
@@ -187,35 +209,38 @@ const Donut: React.FC<{
               padding: '4px 10px',
               borderRadius: 999,
               background: TOKENS.badgeBg,
-              border: hasRequest ? `1px solid ${TOKENS.success}` : `1px solid ${TOKENS.border}`,
-              color: TOKENS.text,
+              border: hasRequest
+                ? `1px solid ${donutColor}`
+                : `1px solid ${TOKENS.border}`,
               fontWeight: 700,
               fontSize: 12,
               minWidth: 95,
-              textAlign: 'center',
-              whiteSpace: 'nowrap',
             }}
           >
-            {hasRequest && usedRatio !== null ? `${pct(clamp01(usedRatio))}% used` : 'No request'}
+            {hasRequest && usedRatio !== null
+              ? `${pct(clamp01(usedRatio))}% used`
+              : 'No request'}
           </div>
         </div>
       </div>
 
       <div style={{ fontSize: 13, color: TOKENS.textSecondary }}>
-        Request: <span style={{ color: TOKENS.text, fontWeight: 700 }}>{requestText}</span>
+        Request: <b style={{ color: TOKENS.text }}>{requestText}</b>
       </div>
 
       <div style={{ fontSize: 13, color: TOKENS.textSecondary }}>
-        Current: <span style={{ color: TOKENS.text, fontWeight: 700 }}>{currentText}</span>
+        Current: <b style={{ color: TOKENS.text }}>{currentText}</b>
       </div>
 
-      <div style={{ marginTop: 2, fontSize: 13, color: TOKENS.textSecondary }}>
+      <div style={{ fontSize: 13, color: TOKENS.textSecondary }}>
         Over-reserved:{' '}
-        <span style={{ fontWeight: 800, color: TOKENS.text }}>{overReservedText}</span>
+        <b style={{ color: TOKENS.text }}>{overReservedText}</b>
       </div>
     </div>
   );
 };
+
+/* ================= Main Component ================= */
 
 const FinOpsTab: React.FC<Props> = ({ obj }) => {
   const namespace = obj?.metadata?.namespace ?? '';
@@ -227,25 +252,25 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     [namespace, workloadName],
   );
 
-  const [requestResp, requestError, requestLoading] = usePrometheusPoll({
+  const [requestResp] = usePrometheusPoll({
     endpoint: PrometheusEndpoint.QUERY,
     query: requestQuery,
     namespace,
-    delay: 60_000,
+    delay: 60000,
   });
 
-  const [maxResp, maxError, maxLoading] = usePrometheusPoll({
+  const [maxResp] = usePrometheusPoll({
     endpoint: PrometheusEndpoint.QUERY,
     query: max7dQuery,
     namespace,
-    delay: 60_000,
+    delay: 60000,
   });
 
-  const [currentResp, currentError, currentLoading] = usePrometheusPoll({
+  const [currentResp] = usePrometheusPoll({
     endpoint: PrometheusEndpoint.QUERY,
     query: currentQuery,
     namespace,
-    delay: 60_000,
+    delay: 60000,
   });
 
   const requests = React.useMemo(() => parsePrometheus(requestResp), [requestResp]);
@@ -262,21 +287,14 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     const currentBy = new Map<string, number>();
     current.forEach((s) => currentBy.set(s.container, s.value));
 
-    /**
-     * Display rule:
-     * - show if CURRENT exists (even 0.00 GiB)
-     * - OR show if MAX7D > 0.00 GiB
-     */
     const containers = Array.from(
       new Set([
         ...Array.from(currentBy.keys()),
         ...Array.from(maxBy.entries())
-          .filter(([, v]) => Number.isFinite(v) && v > 0)
+          .filter(([, v]) => v > 0)
           .map(([c]) => c),
       ]),
-    )
-      .filter((c) => c && c !== 'POD')
-      .sort();
+    ).sort();
 
     return containers.map((container) => {
       const requestGiB = requestBy.get(container) ?? null;
@@ -284,13 +302,16 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       const currentGiB = currentBy.get(container) ?? null;
 
       const hasRequest = requestGiB !== null && requestGiB > 0;
-      const usedRatio = hasRequest && maxGiB !== null ? maxGiB / requestGiB : null;
+      const usedRatio =
+        hasRequest && maxGiB !== null ? maxGiB / requestGiB : null;
 
       const overReservedRatio =
-        usedRatio !== null && Number.isFinite(usedRatio) ? Math.max(0, 1 - usedRatio) : null;
+        usedRatio !== null ? Math.max(0, 1 - usedRatio) : null;
 
       const overReservedText =
-        overReservedRatio !== null ? `${pct(overReservedRatio)}% over-reserved` : 'N/A';
+        overReservedRatio !== null
+          ? `${pct(overReservedRatio)}%`
+          : 'N/A';
 
       return {
         container,
@@ -304,72 +325,41 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     });
   }, [requests, max7d, current]);
 
-  const loading = requestLoading || maxLoading || currentLoading;
-  const hasAnyError = Boolean(requestError || maxError || currentError);
-
   return (
-    <div style={{ padding: 16, color: TOKENS.text }}>
-      <h2 style={{ marginTop: 0, color: TOKENS.text }}>FinOps</h2>
+    <div style={{ padding: 16 }}>
+      <h2>FinOps</h2>
 
-      <div style={{ color: TOKENS.textSecondary, marginBottom: 12 }}>
-        {kind} <b style={{ color: TOKENS.text }}>{workloadName}</b> in namespace{' '}
-        <b style={{ color: TOKENS.text }}>{namespace}</b>
+      <div style={{ color: TOKENS.textSecondary, marginBottom: 16 }}>
+        {kind} <b>{workloadName}</b> in namespace <b>{namespace}</b>
       </div>
 
-      {hasAnyError && rows.length === 0 && (
-        <div style={{ color: 'var(--pf-v5-global--danger-color--100)', marginBottom: 12 }}>
-          Prometheus query error
-        </div>
-      )}
-
-      {loading ? (
-        <div style={{ padding: 12, color: TOKENS.textSecondary }}>Loading…</div>
-      ) : rows.length === 0 ? (
-        <div style={{ padding: 12, color: TOKENS.textSecondary }}>
-          No data available for this workload
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
-          {rows.map((r) => (
-            <div
-              key={r.container}
-              style={{
-                border: `1px solid ${TOKENS.border}`,
-                borderRadius: 12,
-                padding: 18,
-                width: 380,
-                background: TOKENS.bgCard,
-                color: TOKENS.text,
-              }}
-            >
-              <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14, color: TOKENS.text }}>
-                Container: {r.container}
-                {!r.hasRequest && (
-                  <span
-                    style={{
-                      marginLeft: 8,
-                      fontSize: 12,
-                      color: TOKENS.textSecondary,
-                      fontWeight: 600,
-                    }}
-                  >
-                    (No request set)
-                  </span>
-                )}
-              </div>
-
-              <Donut
-                usedRatio={r.usedRatio}
-                hasRequest={r.hasRequest}
-                maxText={formatGiB(r.maxGiB)}
-                currentText={formatGiB(r.currentGiB)}
-                requestText={formatGiB(r.requestGiB)}
-                overReservedText={r.overReservedText}
-              />
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24 }}>
+        {rows.map((r) => (
+          <div
+            key={r.container}
+            style={{
+              border: `1px solid ${TOKENS.border}`,
+              borderRadius: 12,
+              padding: 18,
+              width: 380,
+              background: TOKENS.bgCard,
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: 12 }}>
+              Container: {r.container}
             </div>
-          ))}
-        </div>
-      )}
+
+            <Donut
+              usedRatio={r.usedRatio}
+              hasRequest={r.hasRequest}
+              maxText={formatGiB(r.maxGiB)}
+              currentText={formatGiB(r.currentGiB)}
+              requestText={formatGiB(r.requestGiB)}
+              overReservedText={r.overReservedText}
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 };

@@ -1,0 +1,14 @@
+{
+  "enableThresholdColors": true,
+
+  "thresholds": {
+    "redBelow": 0.10,
+    "yellowBelow": 0.50
+  },
+
+  "colors": {
+    "green": "var(--pf-v5-global--success-color--100)",
+    "yellow": "var(--pf-v5-global--warning-color--100)",
+    "red": "var(--pf-v5-global--danger-color--100)"
+  }
+}

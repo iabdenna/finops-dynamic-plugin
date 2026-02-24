@@ -1,23 +1,73 @@
-# OpenShift FinOps – Memory Usage Dynamic Plugin
+# OpenShift FinOps Dynamic Plugin
 
-This project is an **OpenShift Console dynamic plugin** that adds a **FinOps tab** to a Deployment details page.  
-It helps platform teams and developers **visualize real memory consumption** per container and identify **over-reserved memory**.
+A custom OpenShift Console dynamic plugin that provides FinOps visibility at workload level (Deployment, StatefulSet, DaemonSet).
 
----
+The plugin introduces a dedicated FinOps tab that assesses resource efficiency by comparing configured **resource requests** against the **peak usage observed over the past 7 days**.
 
-## ✨ Features
+This financial-first approach enables:
 
-For each container in a **Deployment**, the plugin displays:
+- Clear detection of over-reserved capacity
 
-- Max memory used (last 7 days) 
-  → real peak detected by Prometheus
-- Usage ratio (%)
-  → max usage compared to the configured memory limit
-- Current memory usage
-- Memory limit
+- Identification of cost optimization opportunities
+
+- Data-driven right-sizing strategies
+
+- Improved infrastructure cost governance
+
+
+
+## Finops Analytics
+
+For each container:
+
+- Max memory & CPU used (7d) → real peaks detected by Prometheus
+
+- Current memory & CPU usage
+
+- Memory request & CPU request
+
 - Over-reserved percentage
-- Clean donut visualization:
-  → Green arc showing the ratio between the peak memory usage (7-day max) and the configured memory limit
+
+- Visual donuts representing:
+Max (7d) / Request
+
+
+## Configurable Threshold Colors
+This allows non-developers to enable/disable donut coloring and modify threshold.
+
+The donut color logic is externally configurable via:
+```bash
+src/finops-settings.json
+
+```
+Example:
+
+```json
+
+{
+  "enableThresholdColors": true,
+  "thresholds": {
+    "redBelow": 0.1,
+    "yellowBelow": 0.5
+  },
+  "colors": {
+    "green": "#3E8635",
+    "yellow": "#F0AB00",
+    "red": "#C9190B"
+  }
+}
+
+
+```
+**Behavior**
+
+If enabled:
+
+🔴 Red → usage < 10%
+
+🟡 Yellow → usage < 50%
+
+🟢 Green → usage ≥ 50%
 
 ---
 ## Prerequisites
@@ -36,7 +86,6 @@ Before deploying the plugin, you must have:
 
 You must be logged into the cluster using oc login.
 
----
 
 ## Initial Deployment
 
@@ -69,7 +118,7 @@ helm upgrade finops-plugin charts/openshift-console-plugin \
   --set plugin.image=image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-console-plugin:0.0.2
  ```
 
----
+
 
 ## Verification
 
@@ -79,7 +128,6 @@ Workloads → Deployments → select a Deployment → FinOps tab
 
 The FinOps dashboard should now be visible.
 
----
 
 ## Updating the FinOps Dashboard
 
@@ -123,9 +171,9 @@ helm upgrade finops-plugin charts/openshift-console-plugin \
   --set plugin.image=image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-console-plugin:0.0.2
  ```
 
-7. force the OpenShift Console to reload by doing a hard refresh (Ctrl + Shift + R).
+7. Force the OpenShift Console to reload by doing a hard refresh (Ctrl + Shift + R).
 
----
+
 
 ## Validation After Update
 
@@ -133,7 +181,7 @@ In the OpenShift Console, go to ConsolePlugins, select finops-plugin, and check 
 
 ---
 
-## Common Pitfalls
+## Notes
 
 Rebuilding the image without updating the plugin version will result in the old plugin still being loaded.  
 Reusing the same image tag without forcing a rollout will prevent the console from picking up changes.  

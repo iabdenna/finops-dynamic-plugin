@@ -69,7 +69,7 @@ If enabled:
 
 🟢 Green → usage ≥ 50%
 
----
+
 ## Prerequisites
 
 Before deploying the plugin, you must have:

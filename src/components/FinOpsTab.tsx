@@ -27,11 +27,7 @@ type Series = {
 /* ================= Utilities ================= */
 
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-
-// keep exact % (no clamping)
 const pctExact = (x: number) => Math.round(x * 100);
-
-
 
 const formatGiB = (gib: number | null) => {
   if (gib === null || !Number.isFinite(gib)) return 'N/A';
@@ -69,7 +65,6 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
  */
 const buildQueries = (namespace: string, workloadName: string, workloadType: string) => {
   // -------- RAM (baseline = REQUEST) --------
-  // RAM REQUEST (bytes) -> GiB
   const ramRequestQuery = `
 max by (container) (
   kube_pod_container_resource_requests{
@@ -87,7 +82,6 @@ max by (container) (
 ) / 1024^3
 `.trim();
 
-  // Max RAM usage over 7d (bytes) -> GiB
   const ramMax7dQuery = `
 max by (container) (
   max_over_time(
@@ -106,7 +100,6 @@ max by (container) (
 ) / 1024^3
 `.trim();
 
-  // Current RAM usage (bytes) -> GiB
   const ramCurrentQuery = `
 max by (container) (
   container_memory_working_set_bytes{
@@ -124,7 +117,6 @@ max by (container) (
 `.trim();
 
   // -------- CPU (baseline = REQUEST) --------
-  // Max CPU usage over 7d (cores)
   const cpuMax7dCoresQuery = `
 max by (container) (
   max_over_time(
@@ -143,13 +135,12 @@ max by (container) (
 )
 `.trim();
 
-  // Current CPU usage (cores)
   const cpuCurrentCoresQuery = `
 max by (container) (
   node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate{
-      namespace="${namespace}",
-      container!="",
-      container!="POD"
+    namespace="${namespace}",
+    container!="",
+    container!="POD"
   }
   * on(namespace, pod) group_left(workload, workload_type)
     namespace_workload_pod:kube_pod_owner:relabel{
@@ -160,7 +151,6 @@ max by (container) (
 )
 `.trim();
 
-  // CPU REQUEST (cores)
   const cpuRequestCoresQuery = `
 max by (container) (
   kube_pod_container_resource_requests{
@@ -179,11 +169,9 @@ max by (container) (
 `.trim();
 
   return {
-    // RAM
     ramRequestQuery,
     ramMax7dQuery,
     ramCurrentQuery,
-    // CPU
     cpuMax7dCoresQuery,
     cpuCurrentCoresQuery,
     cpuRequestCoresQuery,
@@ -205,9 +193,8 @@ const DEFAULT_GREEN = '#3E8635';
 
 /* ================= Color Logic (from JSON) ================= */
 /**
- * Keep your threshold logic, but:
- * - We will NOT force red when ratio>1 (per your request).
- * - For CPU > 100%, we will still show green unless thresholds say otherwise.
+ * Keep donut color logic (green/yellow/red) based on clamped ratio.
+ * For ratio > 1, ring stays full, and we keep the computed color (no forced red).
  */
 const getDonutColor = (usedRatio: number | null, enabled: boolean): string => {
   const green = settings?.colors?.green ?? DEFAULT_GREEN;
@@ -232,8 +219,7 @@ type DonutModel = {
   hasBaseline: boolean; // request exists
   ratio: number | null; // max / request (can be > 1)
   ratioClamped: number | null; // 0..1 for ring
-  badgeText: string; // exact "% used" (can exceed 100) or "No request"
-  tagText: string | null; // "Under-provisioned" when ratio > 1
+  badgeText: string; // exact % used (can exceed 100)
   overReservedText: string; // "xx%" or "N/A"
   color: string;
 };
@@ -244,27 +230,17 @@ const buildDonutModel = (maxVal: number | null, requestVal: number | null): Donu
   const ratio =
     hasBaseline && maxVal !== null && Number.isFinite(maxVal) ? maxVal / requestVal : null;
 
-  // ring is clamped for visuals
   const ratioClamped =
     ratio !== null && Number.isFinite(ratio) ? clamp01(ratio) : null;
 
-  // keep green/yellow/red logic based on CLAMPED ratio (same as before)
   const thresholdEnabled = Boolean(settings?.enableThresholdColors);
   const color = getDonutColor(ratio, thresholdEnabled);
 
-  // ✅ badge is EXACT (can be >100%)
   const badgeText =
     hasBaseline && ratio !== null && Number.isFinite(ratio)
       ? `${pctExact(ratio)}% used`
       : 'No request';
 
-  // ✅ tag for under-provisioned when ratio > 1 (exact)
-  const tagText =
-    hasBaseline && ratio !== null && Number.isFinite(ratio) && ratio > 1
-      ? 'Under-provisioned'
-      : null;
-
-  // Over-reserved only makes sense when ratio <= 1
   const overReserved =
     hasBaseline && ratio !== null && Number.isFinite(ratio)
       ? Math.max(0, 1 - ratio)
@@ -272,8 +248,43 @@ const buildDonutModel = (maxVal: number | null, requestVal: number | null): Donu
 
   const overReservedText = overReserved !== null ? `${pctExact(overReserved)}%` : 'N/A';
 
-  return { hasBaseline, ratio, ratioClamped, badgeText, tagText, overReservedText, color };
+  return { hasBaseline, ratio, ratioClamped, badgeText, overReservedText, color };
 };
+
+/* ================= Tag UI ================= */
+
+const TagPill: React.FC<{ text: string }> = ({ text }) => (
+  <span
+    style={{
+      display: 'inline-block',
+      padding: '2px 8px',
+      borderRadius: 999,
+      fontSize: 11,
+      fontWeight: 700,
+      border: '1px solid var(--pf-v5-global--info-color--200)',
+      color: 'var(--pf-v5-global--info-color--100)',
+      background: 'var(--pf-v5-global--info-color--50)',
+      whiteSpace: 'nowrap',
+    }}
+  >
+    {text}
+  </span>
+);
+
+const SectionHeader: React.FC<{ title: string; showTag: boolean }> = ({ title, showTag }) => (
+  <div
+    style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      marginBottom: 10,
+    }}
+  >
+    <div style={{ fontWeight: 700, color: TOKENS.text }}>{title}</div>
+    {showTag ? <TagPill text="Under-provisioned" /> : <span />}
+  </div>
+);
 
 /* ================= Donuts ================= */
 
@@ -284,9 +295,8 @@ const DonutBase: React.FC<{
   badgeBorderColor: string;
   ringRatio: number | null; // 0..1
   ringColor: string;
-  tagText?: string | null; // optional small tag
   bottomLines: Array<{ label: string; value: string }>;
-}> = ({ title, centerValue, badgeText, badgeBorderColor, ringRatio, ringColor, tagText, bottomLines }) => {
+}> = ({ title, centerValue, badgeText, badgeBorderColor, ringRatio, ringColor, bottomLines }) => {
   const size = 200;
   const stroke = 18;
   const r = (size - stroke) / 2;
@@ -370,25 +380,6 @@ const DonutBase: React.FC<{
           >
             {badgeText}
           </div>
-
-          {/* ✅ small tag when under-provisioned */}
-          {tagText && (
-            <div
-              style={{
-                marginTop: 2,
-                padding: '2px 8px',
-                borderRadius: 999,
-                background: TOKENS.badgeBg,
-                border: `1px solid ${TOKENS.border}`,
-                color: TOKENS.textSecondary,
-                fontWeight: 700,
-                fontSize: 11,
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {tagText}
-            </div>
-          )}
         </div>
       </div>
 
@@ -401,9 +392,6 @@ const DonutBase: React.FC<{
   );
 };
 
-/**
- * RAM donut (baseline = REQUEST):
- */
 const DonutRAM: React.FC<{
   maxGiB: number | null;
   currentGiB: number | null;
@@ -419,7 +407,6 @@ const DonutRAM: React.FC<{
       badgeBorderColor={m.hasBaseline ? m.color : TOKENS.border}
       ringRatio={m.hasBaseline ? m.ratioClamped : null}
       ringColor={m.color}
-      tagText={m.tagText}
       bottomLines={[
         { label: 'Request', value: formatGiB(requestGiB) },
         { label: 'Current', value: formatGiB(currentGiB) },
@@ -429,14 +416,6 @@ const DonutRAM: React.FC<{
   );
 };
 
-/**
- * CPU donut (baseline = REQUEST):
- * - Keep title: "Max CPU used (7d)"
- * - Center: max cores (7d)
- * - Badge: exact % used (can exceed 100)
- * - Tag: "Under-provisioned" when ratio > 1
- * - Color stays green (per thresholds logic; no forced red)
- */
 const DonutCPU: React.FC<{
   maxCores: number | null;
   currentCores: number | null;
@@ -452,7 +431,6 @@ const DonutCPU: React.FC<{
       badgeBorderColor={m.hasBaseline ? m.color : TOKENS.border}
       ringRatio={m.hasBaseline ? m.ratioClamped : null}
       ringColor={m.color}
-      tagText={m.tagText}
       bottomLines={[
         { label: 'CPU request', value: formatCpuCoresOrMillicores(requestCores) },
         { label: 'Current CPU', value: formatCpuCoresOrMillicores(currentCores) },
@@ -610,6 +588,14 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
       cpuCurrentError,
   );
 
+  const isUnderProvisioned = (maxVal: number | null, reqVal: number | null) =>
+    maxVal !== null &&
+    reqVal !== null &&
+    Number.isFinite(maxVal) &&
+    Number.isFinite(reqVal) &&
+    reqVal > 0 &&
+    maxVal / reqVal > 1;
+
   return (
     <div style={{ padding: 16, color: TOKENS.text }}>
       <h2 style={{ marginTop: 0, color: TOKENS.text }}>FinOps</h2>
@@ -633,53 +619,56 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
         </div>
       ) : (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-start' }}>
-          {rows.map((r) => (
-            <div
-              key={r.container}
-              style={{
-                border: `1px solid ${TOKENS.border}`,
-                borderRadius: 12,
-                padding: 18,
-                width: 380,
-                background: TOKENS.bgCard,
-                color: TOKENS.text,
-              }}
-            >
-              <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14, color: TOKENS.text }}>
-                Container: {r.container}
-              </div>
+          {rows.map((r) => {
+            const ramUnder = isUnderProvisioned(r.ramMaxGiB, r.ramRequestGiB);
+            const cpuUnder = isUnderProvisioned(r.cpuMaxCores, r.cpuRequestCores);
 
-              {/* ===== RAM ===== */}
-              <div style={{ fontWeight: 700, color: TOKENS.text, marginBottom: 10 }}>
-                Memory (RAM)
-              </div>
-
-              <DonutRAM
-                maxGiB={r.ramMaxGiB}
-                currentGiB={r.ramCurrentGiB}
-                requestGiB={r.ramRequestGiB}
-              />
-
-              {/* ===== Divider ===== */}
+            return (
               <div
+                key={r.container}
                 style={{
-                  height: 1,
-                  background: TOKENS.border,
-                  margin: '16px 0',
-                  opacity: 0.9,
+                  border: `1px solid ${TOKENS.border}`,
+                  borderRadius: 12,
+                  padding: 18,
+                  width: 380,
+                  background: TOKENS.bgCard,
+                  color: TOKENS.text,
                 }}
-              />
+              >
+                <div style={{ fontWeight: 700, marginBottom: 12, fontSize: 14, color: TOKENS.text }}>
+                  Container: {r.container}
+                </div>
 
-              {/* ===== CPU ===== */}
-              <div style={{ fontWeight: 700, color: TOKENS.text, marginBottom: 10 }}>CPU</div>
+                {/* ===== RAM ===== */}
+                <SectionHeader title="Memory (RAM)" showTag={ramUnder} />
 
-              <DonutCPU
-                maxCores={r.cpuMaxCores}
-                currentCores={r.cpuCurrentCores}
-                requestCores={r.cpuRequestCores}
-              />
-            </div>
-          ))}
+                <DonutRAM
+                  maxGiB={r.ramMaxGiB}
+                  currentGiB={r.ramCurrentGiB}
+                  requestGiB={r.ramRequestGiB}
+                />
+
+                {/* ===== Divider ===== */}
+                <div
+                  style={{
+                    height: 1,
+                    background: TOKENS.border,
+                    margin: '16px 0',
+                    opacity: 0.9,
+                  }}
+                />
+
+                {/* ===== CPU ===== */}
+                <SectionHeader title="CPU" showTag={cpuUnder} />
+
+                <DonutCPU
+                  maxCores={r.cpuMaxCores}
+                  currentCores={r.cpuCurrentCores}
+                  requestCores={r.cpuRequestCores}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

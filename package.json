@@ -1,6 +1,6 @@
 {
   "name": "finops-plugin",
-  "version": "0.26.7",
+  "version": "0.26.8",
   "description": "Template project for OpenShift Console plugins",
   "private": true,
   "license": "Apache-2.0",
@@ -70,7 +70,7 @@
   },
 "consolePlugin": {
   "name": "finops-plugin",
-  "version": "0.26.7",
+  "version": "0.26.8",
   "displayName": "FinOps Plugin",
   "description": "FinOps tab on Deployment details",
   "exposedModules": {

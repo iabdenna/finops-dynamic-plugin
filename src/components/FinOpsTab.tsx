@@ -27,7 +27,11 @@ type Series = {
 /* ================= Utilities ================= */
 
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-const pct = (x: number) => Math.round(x * 100);
+
+// keep exact % (no clamping)
+const pctExact = (x: number) => Math.round(x * 100);
+
+
 
 const formatGiB = (gib: number | null) => {
   if (gib === null || !Number.isFinite(gib)) return 'N/A';
@@ -143,9 +147,9 @@ max by (container) (
   const cpuCurrentCoresQuery = `
 max by (container) (
   node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate{
-    namespace="${namespace}",
-    container!="",
-    container!="POD"
+      namespace="${namespace}",
+      container!="",
+      container!="POD"
   }
   * on(namespace, pod) group_left(workload, workload_type)
     namespace_workload_pod:kube_pod_owner:relabel{
@@ -200,7 +204,11 @@ const TOKENS = {
 const DEFAULT_GREEN = '#3E8635';
 
 /* ================= Color Logic (from JSON) ================= */
-
+/**
+ * Keep your threshold logic, but:
+ * - We will NOT force red when ratio>1 (per your request).
+ * - For CPU > 100%, we will still show green unless thresholds say otherwise.
+ */
 const getDonutColor = (usedRatio: number | null, enabled: boolean): string => {
   const green = settings?.colors?.green ?? DEFAULT_GREEN;
   const red = settings?.colors?.red ?? '#C9190B';
@@ -224,7 +232,8 @@ type DonutModel = {
   hasBaseline: boolean; // request exists
   ratio: number | null; // max / request (can be > 1)
   ratioClamped: number | null; // 0..1 for ring
-  badgeText: string; // "% used" or "No request"
+  badgeText: string; // exact "% used" (can exceed 100) or "No request"
+  tagText: string | null; // "Under-provisioned" when ratio > 1
   overReservedText: string; // "xx%" or "N/A"
   color: string;
 };
@@ -235,25 +244,35 @@ const buildDonutModel = (maxVal: number | null, requestVal: number | null): Donu
   const ratio =
     hasBaseline && maxVal !== null && Number.isFinite(maxVal) ? maxVal / requestVal : null;
 
+  // ring is clamped for visuals
   const ratioClamped =
     ratio !== null && Number.isFinite(ratio) ? clamp01(ratio) : null;
 
+  // keep green/yellow/red logic based on CLAMPED ratio (same as before)
   const thresholdEnabled = Boolean(settings?.enableThresholdColors);
   const color = getDonutColor(ratio, thresholdEnabled);
 
+  // ✅ badge is EXACT (can be >100%)
   const badgeText =
     hasBaseline && ratio !== null && Number.isFinite(ratio)
-      ? `${pct(clamp01(ratio))}% used`
+      ? `${pctExact(ratio)}% used`
       : 'No request';
 
+  // ✅ tag for under-provisioned when ratio > 1 (exact)
+  const tagText =
+    hasBaseline && ratio !== null && Number.isFinite(ratio) && ratio > 1
+      ? 'Under-provisioned'
+      : null;
+
+  // Over-reserved only makes sense when ratio <= 1
   const overReserved =
     hasBaseline && ratio !== null && Number.isFinite(ratio)
       ? Math.max(0, 1 - ratio)
       : null;
 
-  const overReservedText = overReserved !== null ? `${pct(overReserved)}%` : 'N/A';
+  const overReservedText = overReserved !== null ? `${pctExact(overReserved)}%` : 'N/A';
 
-  return { hasBaseline, ratio, ratioClamped, badgeText, overReservedText, color };
+  return { hasBaseline, ratio, ratioClamped, badgeText, tagText, overReservedText, color };
 };
 
 /* ================= Donuts ================= */
@@ -265,8 +284,9 @@ const DonutBase: React.FC<{
   badgeBorderColor: string;
   ringRatio: number | null; // 0..1
   ringColor: string;
+  tagText?: string | null; // optional small tag
   bottomLines: Array<{ label: string; value: string }>;
-}> = ({ title, centerValue, badgeText, badgeBorderColor, ringRatio, ringColor, bottomLines }) => {
+}> = ({ title, centerValue, badgeText, badgeBorderColor, ringRatio, ringColor, tagText, bottomLines }) => {
   const size = 200;
   const stroke = 18;
   const r = (size - stroke) / 2;
@@ -343,13 +363,32 @@ const DonutBase: React.FC<{
               color: TOKENS.text,
               fontWeight: 700,
               fontSize: 12,
-              minWidth: 95,
+              minWidth: 105,
               textAlign: 'center',
               whiteSpace: 'nowrap',
             }}
           >
             {badgeText}
           </div>
+
+          {/* ✅ small tag when under-provisioned */}
+          {tagText && (
+            <div
+              style={{
+                marginTop: 2,
+                padding: '2px 8px',
+                borderRadius: 999,
+                background: TOKENS.badgeBg,
+                border: `1px solid ${TOKENS.border}`,
+                color: TOKENS.textSecondary,
+                fontWeight: 700,
+                fontSize: 11,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {tagText}
+            </div>
+          )}
         </div>
       </div>
 
@@ -364,8 +403,6 @@ const DonutBase: React.FC<{
 
 /**
  * RAM donut (baseline = REQUEST):
- * - Center: Max memory used (7d) GiB
- * - Badge: % used (max/request) or No request
  */
 const DonutRAM: React.FC<{
   maxGiB: number | null;
@@ -382,6 +419,7 @@ const DonutRAM: React.FC<{
       badgeBorderColor={m.hasBaseline ? m.color : TOKENS.border}
       ringRatio={m.hasBaseline ? m.ratioClamped : null}
       ringColor={m.color}
+      tagText={m.tagText}
       bottomLines={[
         { label: 'Request', value: formatGiB(requestGiB) },
         { label: 'Current', value: formatGiB(currentGiB) },
@@ -393,9 +431,11 @@ const DonutRAM: React.FC<{
 
 /**
  * CPU donut (baseline = REQUEST):
- * - Title: Max CPU used (7d) ✅ keep
- * - Center: Max CPU over 7d (cores/millicores)
- * - Badge: % used (max/request) or No request
+ * - Keep title: "Max CPU used (7d)"
+ * - Center: max cores (7d)
+ * - Badge: exact % used (can exceed 100)
+ * - Tag: "Under-provisioned" when ratio > 1
+ * - Color stays green (per thresholds logic; no forced red)
  */
 const DonutCPU: React.FC<{
   maxCores: number | null;
@@ -412,6 +452,7 @@ const DonutCPU: React.FC<{
       badgeBorderColor={m.hasBaseline ? m.color : TOKENS.border}
       ringRatio={m.hasBaseline ? m.ratioClamped : null}
       ringColor={m.color}
+      tagText={m.tagText}
       bottomLines={[
         { label: 'CPU request', value: formatCpuCoresOrMillicores(requestCores) },
         { label: 'Current CPU', value: formatCpuCoresOrMillicores(currentCores) },
@@ -561,7 +602,12 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     cpuCurrentLoading;
 
   const hasAnyError = Boolean(
-    ramRequestError || ramMaxError || ramCurrentError || cpuReqError || cpuMaxError || cpuCurrentError,
+    ramRequestError ||
+      ramMaxError ||
+      ramCurrentError ||
+      cpuReqError ||
+      cpuMaxError ||
+      cpuCurrentError,
   );
 
   return (
@@ -604,7 +650,9 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
               </div>
 
               {/* ===== RAM ===== */}
-              <div style={{ fontWeight: 700, color: TOKENS.text, marginBottom: 10 }}>Memory (RAM)</div>
+              <div style={{ fontWeight: 700, color: TOKENS.text, marginBottom: 10 }}>
+                Memory (RAM)
+              </div>
 
               <DonutRAM
                 maxGiB={r.ramMaxGiB}

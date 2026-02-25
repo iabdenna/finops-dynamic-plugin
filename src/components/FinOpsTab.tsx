@@ -37,7 +37,6 @@ const formatGiB = (gib: number | null) => {
 const formatCpuCoresOrMillicores = (cores: number | null) => {
   if (cores === null || !Number.isFinite(cores)) return 'N/A';
   if (cores < 1) return `${Math.round(cores * 1000)}m`;
-  // keep it readable
   const rounded = Math.round(cores * 100) / 100;
   return `${rounded}`;
 };
@@ -57,96 +56,130 @@ const parsePrometheus = (resp?: PrometheusResponse): Series[] => {
     .filter(Boolean) as Series[];
 };
 
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/* ================= Prometheus Queries ================= */
+/* ================= Prometheus Queries (CLIENT STYLE) ================= */
 /**
- * Workload filtered by pod regex: <workload>-.*
- * NOTE: For StatefulSets, pod names are usually <stsname>-<ordinal>, which matches this regex.
- * NOTE: For DaemonSets, pod names are usually <dsname>-xxxxx, which matches this regex.
+ * Uses namespace_workload_pod:kube_pod_owner:relabel to map pod -> workload precisely
+ * Filters by namespace + workload + workload_type (deployment|statefulset|daemonset)
+ *
+ * NOTE: We aggregate "max by (container)" for donut-per-container display.
  */
 const buildQueries = (namespace: string, workloadName: string, workloadType: string) => {
-  const podRegex = `${escapeRegex(workloadName)}-.*`;
+  // -------- RAM (baseline = REQUEST) --------
+  // RAM REQUEST (bytes) -> GiB
+  const ramRequestQuery = `
+max by (container) (
+  kube_pod_container_resource_requests{
+    resource="memory",
+    namespace="${namespace}",
+    container!="",
+    container!="POD"
+  }
+  * on(namespace, pod) group_left(workload, workload_type)
+    namespace_workload_pod:kube_pod_owner:relabel{
+      namespace="${namespace}",
+      workload="${workloadName}",
+      workload_type="${workloadType}"
+    }
+) / 1024^3
+`.trim();
 
-  // -------- RAM --------
+  // Max RAM usage over 7d (bytes) -> GiB
   const ramMax7dQuery = `
 max by (container) (
   max_over_time(
     container_memory_working_set_bytes{
       namespace="${namespace}",
-      pod=~"${podRegex}",
       container!="",
       container!="POD"
     }[7d]
   )
+  * on(namespace, pod) group_left(workload, workload_type)
+    namespace_workload_pod:kube_pod_owner:relabel{
+      namespace="${namespace}",
+      workload="${workloadName}",
+      workload_type="${workloadType}"
+    }
 ) / 1024^3
 `.trim();
 
+  // Current RAM usage (bytes) -> GiB
   const ramCurrentQuery = `
 max by (container) (
   container_memory_working_set_bytes{
     namespace="${namespace}",
-    pod=~"${podRegex}",
     container!="",
     container!="POD"
   }
+  * on(namespace, pod) group_left(workload, workload_type)
+    namespace_workload_pod:kube_pod_owner:relabel{
+      namespace="${namespace}",
+      workload="${workloadName}",
+      workload_type="${workloadType}"
+    }
 ) / 1024^3
 `.trim();
 
-  const ramRequestQuery = `
-max by (container) (
-  kube_pod_container_resource_requests{
-    namespace="${namespace}",
-    pod=~"${podRegex}",
-    resource="memory",
-    container!="",
-    container!="POD"
-  }
-) / 1024^3
-`.trim();
-
-  // -------- CPU (your dev metric adapted to workload filtering) --------
-  // CPU max over 7d (cores)
+  // -------- CPU (baseline = REQUEST) --------
+  // Max CPU usage over 7d (cores)
   const cpuMax7dCoresQuery = `
 max by (container) (
   max_over_time(
     node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate{
       namespace="${namespace}",
-      pod=~"${podRegex}",
-      container!=""
+      container!="",
+      container!="POD"
     }[7d]
   )
+  * on(namespace, pod) group_left(workload, workload_type)
+    namespace_workload_pod:kube_pod_owner:relabel{
+      namespace="${namespace}",
+      workload="${workloadName}",
+      workload_type="${workloadType}"
+    }
 )
 `.trim();
 
-  // CPU current (cores) - short window gives "now-ish"
+  // Current CPU usage (cores)
   const cpuCurrentCoresQuery = `
 max by (container) (
   node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate{
     namespace="${namespace}",
-    pod=~"${podRegex}",
-    container!=""
-  }
-)
-`.trim();
-
-  // CPU request (cores)
-  const cpuRequestCoresQuery = `
-max by (container) (
-  kube_pod_container_resource_requests{
-    namespace="${namespace}",
-    pod=~"${podRegex}",
-    resource="cpu",
     container!="",
     container!="POD"
   }
+  * on(namespace, pod) group_left(workload, workload_type)
+    namespace_workload_pod:kube_pod_owner:relabel{
+      namespace="${namespace}",
+      workload="${workloadName}",
+      workload_type="${workloadType}"
+    }
+)
+`.trim();
+
+  // CPU REQUEST (cores)
+  const cpuRequestCoresQuery = `
+max by (container) (
+  kube_pod_container_resource_requests{
+    resource="cpu",
+    namespace="${namespace}",
+    container!="",
+    container!="POD"
+  }
+  * on(namespace, pod) group_left(workload, workload_type)
+    namespace_workload_pod:kube_pod_owner:relabel{
+      namespace="${namespace}",
+      workload="${workloadName}",
+      workload_type="${workloadType}"
+    }
 )
 `.trim();
 
   return {
+    // RAM
+    ramRequestQuery,
     ramMax7dQuery,
     ramCurrentQuery,
-    ramRequestQuery,
+    // CPU
     cpuMax7dCoresQuery,
     cpuCurrentCoresQuery,
     cpuRequestCoresQuery,
@@ -169,7 +202,6 @@ const DEFAULT_GREEN = '#3E8635';
 /* ================= Color Logic (from JSON) ================= */
 
 const getDonutColor = (usedRatio: number | null, enabled: boolean): string => {
-  // fallback
   const green = settings?.colors?.green ?? DEFAULT_GREEN;
   const red = settings?.colors?.red ?? '#C9190B';
   const yellow = settings?.colors?.yellow ?? '#F0AB00';
@@ -186,12 +218,50 @@ const getDonutColor = (usedRatio: number | null, enabled: boolean): string => {
   return green;
 };
 
+/* ================= Shared Donut Model ================= */
+
+type DonutModel = {
+  hasBaseline: boolean; // request exists
+  ratio: number | null; // max / request (can be > 1)
+  ratioClamped: number | null; // 0..1 for ring
+  badgeText: string; // "% used" or "No request"
+  overReservedText: string; // "xx%" or "N/A"
+  color: string;
+};
+
+const buildDonutModel = (maxVal: number | null, requestVal: number | null): DonutModel => {
+  const hasBaseline = requestVal !== null && Number.isFinite(requestVal) && requestVal > 0;
+
+  const ratio =
+    hasBaseline && maxVal !== null && Number.isFinite(maxVal) ? maxVal / requestVal : null;
+
+  const ratioClamped =
+    ratio !== null && Number.isFinite(ratio) ? clamp01(ratio) : null;
+
+  const thresholdEnabled = Boolean(settings?.enableThresholdColors);
+  const color = getDonutColor(ratio, thresholdEnabled);
+
+  const badgeText =
+    hasBaseline && ratio !== null && Number.isFinite(ratio)
+      ? `${pct(clamp01(ratio))}% used`
+      : 'No request';
+
+  const overReserved =
+    hasBaseline && ratio !== null && Number.isFinite(ratio)
+      ? Math.max(0, 1 - ratio)
+      : null;
+
+  const overReservedText = overReserved !== null ? `${pct(overReserved)}%` : 'N/A';
+
+  return { hasBaseline, ratio, ratioClamped, badgeText, overReservedText, color };
+};
+
 /* ================= Donuts ================= */
 
 const DonutBase: React.FC<{
   title: string;
-  centerValue: string; // e.g. "0.19 GiB" or "44%"
-  badgeText: string; // e.g. "44% used" / "No request"
+  centerValue: string;
+  badgeText: string;
   badgeBorderColor: string;
   ringRatio: number | null; // 0..1
   ringColor: string;
@@ -293,7 +363,7 @@ const DonutBase: React.FC<{
 };
 
 /**
- * RAM donut:
+ * RAM donut (baseline = REQUEST):
  * - Center: Max memory used (7d) GiB
  * - Badge: % used (max/request) or No request
  */
@@ -302,77 +372,50 @@ const DonutRAM: React.FC<{
   currentGiB: number | null;
   requestGiB: number | null;
 }> = ({ maxGiB, currentGiB, requestGiB }) => {
-  const hasRequest = requestGiB !== null && requestGiB > 0;
-  const usedRatio = hasRequest && maxGiB !== null ? maxGiB / requestGiB : null;
-
-  const thresholdEnabled = Boolean(settings?.enableThresholdColors);
-  const color = getDonutColor(usedRatio, thresholdEnabled);
-
-  const badgeText = hasRequest && usedRatio !== null ? `${pct(clamp01(usedRatio))}% used` : 'No request';
-
-  const overReserved =
-    hasRequest && usedRatio !== null && Number.isFinite(usedRatio) ? Math.max(0, 1 - usedRatio) : null;
-
-  const overReservedText = overReserved !== null ? `${pct(overReserved)}%` : 'N/A';
+  const m = buildDonutModel(maxGiB, requestGiB);
 
   return (
     <DonutBase
       title="Max memory used (7d)"
       centerValue={formatGiB(maxGiB)}
-      badgeText={badgeText}
-      badgeBorderColor={hasRequest ? color : TOKENS.border}
-      ringRatio={hasRequest ? usedRatio : null}
-      ringColor={color}
+      badgeText={m.badgeText}
+      badgeBorderColor={m.hasBaseline ? m.color : TOKENS.border}
+      ringRatio={m.hasBaseline ? m.ratioClamped : null}
+      ringColor={m.color}
       bottomLines={[
         { label: 'Request', value: formatGiB(requestGiB) },
         { label: 'Current', value: formatGiB(currentGiB) },
-        { label: 'Over-reserved', value: overReservedText },
+        { label: 'Over-reserved', value: m.overReservedText },
       ]}
     />
   );
 };
 
 /**
- * CPU donut (updated per your decision):
- * - Title: Max CPU used (7d)
- * - Center: percent (max_cpu / request_cpu * 100)
- * - Bottom: CPU request, Current CPU (optional but we include), Over-reserved
+ * CPU donut (baseline = REQUEST):
+ * - Title: Max CPU used (7d) ✅ keep
+ * - Center: Max CPU over 7d (cores/millicores)
+ * - Badge: % used (max/request) or No request
  */
 const DonutCPU: React.FC<{
   maxCores: number | null;
   currentCores: number | null;
   requestCores: number | null;
 }> = ({ maxCores, currentCores, requestCores }) => {
-  const hasRequest = requestCores !== null && requestCores > 0;
-  const ratio = hasRequest && maxCores !== null ? maxCores / requestCores : null; // 0..N
-  const ratioClamped = ratio !== null ? clamp01(ratio) : null;
-
-  const thresholdEnabled = Boolean(settings?.enableThresholdColors);
-  const color = getDonutColor(ratio, thresholdEnabled);
-
-  const percentText =
-    hasRequest && ratio !== null && Number.isFinite(ratio) ? `${pct(clamp01(ratio))}%` : 'N/A';
-
-  const badgeText =
-    hasRequest && ratio !== null && Number.isFinite(ratio) ? `${pct(clamp01(ratio))}% used` : 'No request';
-
-  const overReserved =
-    hasRequest && ratio !== null && Number.isFinite(ratio) ? Math.max(0, 1 - ratio) : null;
-
-  const overReservedText = overReserved !== null ? `${pct(overReserved)}%` : 'N/A';
+  const m = buildDonutModel(maxCores, requestCores);
 
   return (
     <DonutBase
       title="Max CPU used (7d)"
-      centerValue={percentText}
-      badgeText={badgeText}
-      badgeBorderColor={hasRequest ? color : TOKENS.border}
-      ringRatio={hasRequest ? ratioClamped : null}
-      ringColor={color}
+      centerValue={formatCpuCoresOrMillicores(maxCores)}
+      badgeText={m.badgeText}
+      badgeBorderColor={m.hasBaseline ? m.color : TOKENS.border}
+      ringRatio={m.hasBaseline ? m.ratioClamped : null}
+      ringColor={m.color}
       bottomLines={[
         { label: 'CPU request', value: formatCpuCoresOrMillicores(requestCores) },
         { label: 'Current CPU', value: formatCpuCoresOrMillicores(currentCores) },
-        { label: 'Over-reserved', value: overReservedText },
+        { label: 'Over-reserved', value: m.overReservedText },
       ]}
     />
   );
@@ -385,7 +428,6 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
   const workloadName = obj?.metadata?.name ?? '';
   const kind = obj?.kind ?? 'Workload';
 
-  // For Deployment/StatefulSet/DaemonSet, kind can vary; we keep the same podRegex approach.
   const workloadType =
     kind.toLowerCase() === 'deployment'
       ? 'deployment'
@@ -396,13 +438,16 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
           : 'workload';
 
   const {
+    ramRequestQuery,
     ramMax7dQuery,
     ramCurrentQuery,
-    ramRequestQuery,
     cpuMax7dCoresQuery,
     cpuCurrentCoresQuery,
     cpuRequestCoresQuery,
-  } = React.useMemo(() => buildQueries(namespace, workloadName, workloadType), [namespace, workloadName, workloadType]);
+  } = React.useMemo(
+    () => buildQueries(namespace, workloadName, workloadType),
+    [namespace, workloadName, workloadType],
+  );
 
   // RAM polls
   const [ramRequestResp, ramRequestError, ramRequestLoading] = usePrometheusPoll({
@@ -472,10 +517,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     const cpuMaxBy = mapFrom(cpuMax7d);
     const cpuCurBy = mapFrom(cpuCurrent);
 
-    /**
-     * Display rule (avoid "ghost containers"):
-     * show container if it has ANY metric present (RAM current exists OR CPU current exists OR max7d > 0 on either).
-     */
+    // Avoid "ghost containers": show if any metric exists
     const containers = Array.from(
       new Set([
         ...Array.from(ramCurBy.keys()),
@@ -484,6 +526,12 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
           .filter(([, v]) => Number.isFinite(v) && v > 0)
           .map(([c]) => c),
         ...Array.from(cpuMaxBy.entries())
+          .filter(([, v]) => Number.isFinite(v) && v > 0)
+          .map(([c]) => c),
+        ...Array.from(ramReqBy.entries())
+          .filter(([, v]) => Number.isFinite(v) && v > 0)
+          .map(([c]) => c),
+        ...Array.from(cpuReqBy.entries())
           .filter(([, v]) => Number.isFinite(v) && v > 0)
           .map(([c]) => c),
       ]),
@@ -512,8 +560,9 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
     cpuMaxLoading ||
     cpuCurrentLoading;
 
-  const hasAnyError =
-    Boolean(ramRequestError || ramMaxError || ramCurrentError || cpuReqError || cpuMaxError || cpuCurrentError);
+  const hasAnyError = Boolean(
+    ramRequestError || ramMaxError || ramCurrentError || cpuReqError || cpuMaxError || cpuCurrentError,
+  );
 
   return (
     <div style={{ padding: 16, color: TOKENS.text }}>
@@ -555,9 +604,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
               </div>
 
               {/* ===== RAM ===== */}
-              <div style={{ fontWeight: 700, color: TOKENS.text, marginBottom: 10 }}>
-              Memory (RAM)
-              </div>
+              <div style={{ fontWeight: 700, color: TOKENS.text, marginBottom: 10 }}>Memory (RAM)</div>
 
               <DonutRAM
                 maxGiB={r.ramMaxGiB}
@@ -576,9 +623,7 @@ const FinOpsTab: React.FC<Props> = ({ obj }) => {
               />
 
               {/* ===== CPU ===== */}
-              <div style={{ fontWeight: 700, color: TOKENS.text, marginBottom: 10 }}>
-              CPU
-              </div>
+              <div style={{ fontWeight: 700, color: TOKENS.text, marginBottom: 10 }}>CPU</div>
 
               <DonutCPU
                 maxCores={r.cpuMaxCores}

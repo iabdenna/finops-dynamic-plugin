@@ -7,6 +7,14 @@ plugin:
   imagePullSecrets: []
   replicas: 2
   port: 9443
+  proxy:
+  - alias: finops
+    endpoint:
+      type: Service
+      service:
+        name: finops-backend
+        namespace: finops-plugin
+        port: 8443
   securityContext:
     enabled: true
   podSecurityContext:

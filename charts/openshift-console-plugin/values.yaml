@@ -9,6 +9,7 @@ plugin:
   port: 9443
   proxy:
   - alias: finops
+    authorization: UserToken
     endpoint:
       type: Service
       service:

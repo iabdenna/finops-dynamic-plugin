@@ -6,49 +6,54 @@ import fs from "fs";
 const app = express();
 
 /**
- * We switch the backend to HTTPS so that the OpenShift Console proxy can reach it
- * without failing TLS handshake (which results in 502).
- *
- * The serving cert is injected by OpenShift into a Secret and mounted in the pod:
- *  - /var/run/tls/tls.crt
- *  - /var/run/tls/tls.key
+ * HTTPS server for OpenShift ConsolePlugin proxy
+ * - OpenShift serving cert mounted at /var/run/tls/tls.{crt,key}
+ * - Backend listens on 8443 (HTTPS)
  */
 
-// ---- Ports
+// ---- HTTPS listener
 const HTTPS_PORT = Number(process.env.HTTPS_PORT || "8443");
-
-// ---- TLS files (serving cert secret mount)
 const TLS_CERT_PATH = process.env.TLS_CERT_PATH || "/var/run/tls/tls.crt";
 const TLS_KEY_PATH = process.env.TLS_KEY_PATH || "/var/run/tls/tls.key";
 
-// ---- In-cluster Prometheus endpoints (overridable)
+// ---- Prom endpoints (should point to oauth-proxy frontends when applicable)
 const OPENSHIFT_PROM =
   process.env.OPENSHIFT_PROM_URL ||
   "https://thanos-querier.openshift-monitoring.svc:9091";
 
 const CUSTOM_PROM =
   process.env.CUSTOM_PROM_URL ||
-  "http://prometheus-operated.custom-monitoring.svc:9090";
+  "https://custom-prom-oauth-proxy.custom-monitoring.svc:9091";
 
-function getServiceAccountToken() {
-  return fs.readFileSync(
-    "/var/run/secrets/kubernetes.io/serviceaccount/token",
-    "utf8"
-  );
-}
+// ---- TLS verify for upstream Prom endpoints (often reencrypt/internal CA)
+const INSECURE_SKIP_TLS_VERIFY =
+  (process.env.INSECURE_SKIP_TLS_VERIFY || "true").toLowerCase() === "true";
 
-// Demo: disable TLS verification for in-cluster reencrypt (Thanos route / service)
 const httpsAgent = new https.Agent({
-  rejectUnauthorized:
-    (process.env.INSECURE_SKIP_TLS_VERIFY || "true").toLowerCase() !== "true",
+  rejectUnauthorized: !INSECURE_SKIP_TLS_VERIFY,
 });
 
-async function queryProm(baseUrl, query, useAuth) {
+/**
+ * Extract Bearer token forwarded by the Console (user identity).
+ * With oauth-proxy in front of Prom/Thanos, we forward the same token.
+ */
+function getBearerToken(req) {
+  const h = req.headers["authorization"] || req.headers["Authorization"];
+  if (!h) return null;
+  const s = String(h);
+  return s.toLowerCase().startsWith("bearer ") ? s.slice(7).trim() : null;
+}
+
+/**
+ * Prometheus instant query helper.
+ * If bearerToken is provided => send Authorization: Bearer <token>
+ */
+async function queryProm(baseUrl, query, bearerToken) {
   const url = `${baseUrl}/api/v1/query`;
   const headers = {};
 
-  if (useAuth) {
-    headers.Authorization = `Bearer ${getServiceAccountToken()}`;
+  if (bearerToken) {
+    headers.Authorization = `Bearer ${bearerToken}`;
   }
 
   const resp = await axios.get(url, {
@@ -61,21 +66,37 @@ async function queryProm(baseUrl, query, useAuth) {
   return resp.data?.data?.result?.[0]?.value?.[1] ?? null;
 }
 
-// ✅ Health endpoint for probes (no namespace hardcode)
+// ---- Health for probes and proxy checks
 app.get("/health", (_req, res) => res.status(200).send("ok"));
 
+/**
+ * FinOps Project endpoint
+ * - requires user Bearer token (because customer oauth-proxy expects it)
+ * - queries:
+ *    custom prom: up
+ *    openshift/thanos: count(kube_pod_info{namespace="X"})
+ */
 app.get("/api/finops/project", async (req, res) => {
   try {
     const namespace = String(req.query.namespace || "");
     if (!namespace) return res.status(400).json({ error: "namespace required" });
 
-    // Custom Prometheus: simple query to validate endpoint
-    const customQuery = "up";
-    const customValue = await queryProm(CUSTOM_PROM, customQuery, false);
+    const userToken = getBearerToken(req);
+    if (!userToken) {
+      return res.status(401).json({ error: "missing bearer token" });
+    }
 
-    // OpenShift monitoring (Thanos): namespace-scoped metric
+    // Custom endpoint (oauth-proxy in front): needs Bearer
+    const customQuery = "up";
+    const customValue = await queryProm(CUSTOM_PROM, customQuery, userToken);
+
+    // Thanos querier (if also behind oauth-proxy): use same Bearer
     const openshiftQuery = `count(kube_pod_info{namespace="${namespace}"})`;
-    const openshiftValue = await queryProm(OPENSHIFT_PROM, openshiftQuery, true);
+    const openshiftValue = await queryProm(
+      OPENSHIFT_PROM,
+      openshiftQuery,
+      userToken
+    );
 
     return res.json({
       namespace,
@@ -83,14 +104,12 @@ app.get("/api/finops/project", async (req, res) => {
       openshift: { query: openshiftQuery, value: openshiftValue },
     });
   } catch (e) {
-    console.error(e);
+    console.error("Error in /api/finops/project:", e);
     return res.status(500).json({ error: e?.message || String(e) });
   }
 });
 
-/**
- * Start HTTPS server
- */
+// ---- Start HTTPS server
 function startHttps() {
   const cert = fs.readFileSync(TLS_CERT_PATH);
   const key = fs.readFileSync(TLS_KEY_PATH);
@@ -99,6 +118,9 @@ function startHttps() {
     .createServer({ key, cert }, app)
     .listen(HTTPS_PORT, "0.0.0.0", () => {
       console.log(`FinOps backend HTTPS running on :${HTTPS_PORT}`);
+      console.log(`OPENSHIFT_PROM_URL=${OPENSHIFT_PROM}`);
+      console.log(`CUSTOM_PROM_URL=${CUSTOM_PROM}`);
+      console.log(`INSECURE_SKIP_TLS_VERIFY=${INSECURE_SKIP_TLS_VERIFY}`);
     });
 }
 

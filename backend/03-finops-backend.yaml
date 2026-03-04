@@ -17,13 +17,20 @@ spec:
         - name: finops-backend
           image: image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-backend:latest
           imagePullPolicy: Always
+
+          envFrom:
+            - configMapRef:
+                name: finops-backend-config
+
           ports:
             - name: https
               containerPort: 8443
+
           volumeMounts:
             - name: tls
               mountPath: /var/run/tls
               readOnly: true
+
           readinessProbe:
             httpGet:
               scheme: HTTPS
@@ -31,6 +38,7 @@ spec:
               port: 8443
             initialDelaySeconds: 5
             periodSeconds: 10
+
           livenessProbe:
             httpGet:
               scheme: HTTPS
@@ -38,6 +46,7 @@ spec:
               port: 8443
             initialDelaySeconds: 15
             periodSeconds: 20
+
       volumes:
         - name: tls
           secret:

@@ -44,9 +44,7 @@ const FinOpsProjectTab: React.FC = () => {
     return (
       <div style={{ padding: 20 }}>
         Project not detected.
-        <div style={{ fontSize: 12, marginTop: 10 }}>
-          Path: {pathname}
-        </div>
+        <div style={{ fontSize: 12, marginTop: 10 }}>Path: {pathname}</div>
       </div>
     );
   }
@@ -67,6 +65,11 @@ const FinOpsProjectTab: React.FC = () => {
     );
   }
 
+  const customQuery = data?.custom?.query ?? 'node_uname_info{job="finops-metrics"}';
+  const customMetric = data?.custom?.metric ?? 'N/A';
+  const openshiftQuery = data?.openshift?.query ?? `count(kube_pod_info{namespace="${projectName}"})`;
+  const openshiftValue = data?.openshift?.value ?? 'N/A';
+
   return (
     <div style={{ padding: 20 }}>
       <h2>FinOps – Project View</h2>
@@ -77,12 +80,22 @@ const FinOpsProjectTab: React.FC = () => {
 
       <div style={{ marginTop: 20 }}>
         <h3>Custom Prometheus</h3>
-        <div>Value: {data?.custom?.value ?? 'N/A'}</div>
+        <div style={{ fontFamily: 'monospace', fontSize: 12, opacity: 0.8 }}>
+          query: {customQuery}
+        </div>
+        <div style={{ fontFamily: 'monospace', fontSize: 13, marginTop: 6 }}>
+          {customMetric}
+        </div>
       </div>
 
       <div style={{ marginTop: 20 }}>
         <h3>OpenShift Monitoring</h3>
-        <div>Value: {data?.openshift?.value ?? 'N/A'}</div>
+        <div style={{ fontFamily: 'monospace', fontSize: 12, opacity: 0.8 }}>
+          query: {openshiftQuery}
+        </div>
+        <div style={{ marginTop: 6 }}>
+          Pods in project <b>{projectName}</b> : <b>{openshiftValue}</b>
+        </div>
       </div>
     </div>
   );

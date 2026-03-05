@@ -1,0 +1,25 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: finops-prom-access
+  namespace: custom-monitoring
+rules:
+- apiGroups: [""]
+  resources: ["services"]
+  resourceNames: ["prometheus-operated"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: finops-prom-access
+  namespace: custom-monitoring
+subjects:
+- kind: ServiceAccount
+  name: finops-backend-sa
+  namespace: finops-plugin
+roleRef:
+  kind: Role
+  name: finops-prom-access
+  apiGroup: rbac.authorization.k8s.io

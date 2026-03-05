@@ -26,8 +26,7 @@ This makes it possible to build a single dashboard mixing **OpenShift metrics** 
            | internal cluster request
            v
 +----------------------+
-|  FinOps Backend      |
-|  (Express service)   |
+|  FinOps Backend      |  
 +----------+-----------+
            |
            | Prometheus API queries
@@ -75,11 +74,13 @@ oc -n finops-plugin start-build finops-backend --follow
 ````
 
 ## Deploy backend
+⚠️ **Important:**  
+The backend must be deployed in the **`finops-plugin` namespace**.
 
-### 1) Apply ConfigMap + Service + Deployment
 Apply the manifests in order:
 
 ```
+
 oc apply -f 01-imagestream.yaml	
 oc apply -f 02-buildconfig.yaml
 oc apply -f 03-finops-backend.yaml	
@@ -93,7 +94,7 @@ oc apply -f 05-finops-backend-config.yaml
 #Edit and apply
 oc -n finops-plugin edit configmap finops-backend-config
 # or update local file then:
-oc apply -f configmap.yaml
+oc apply -f 05-finops-backend-config.yaml
 #Then restart pods to pick up env changes:
 oc -n finops-plugin rollout restart deploy/finops-backend
 oc -n finops-plugin rollout status deploy/finops-backend

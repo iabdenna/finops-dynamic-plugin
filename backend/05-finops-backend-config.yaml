@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finops-backend-config
+  namespace: finops-plugin
+data:
+  OPENSHIFT_PROM_URL: "https://thanos-querier.openshift-monitoring.svc:9091"
+  CUSTOM_PROM_URL: "https://prom-oauth-proxy.custom-monitoring.svc:9091"
+  INSECURE_SKIP_TLS_VERIFY: "true"

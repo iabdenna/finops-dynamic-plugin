@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finops-backend
+  namespace: finops-plugin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: finops-backend
+  template:
+    metadata:
+      labels:
+        app: finops-backend
+    spec:
+      containers:
+        - name: finops-backend
+          image: image-registry.openshift-image-registry.svc:5000/finops-plugin/finops-backend:latest
+          imagePullPolicy: Always
+
+          envFrom:
+            - configMapRef:
+                name: finops-backend-config
+
+          ports:
+            - name: https
+              containerPort: 8443
+
+          volumeMounts:
+            - name: tls
+              mountPath: /var/run/tls
+              readOnly: true
+
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /health
+              port: 8443
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /health
+              port: 8443
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+      volumes:
+        - name: tls
+          secret:
+            secretName: finops-backend-tls

@@ -15,3 +15,7 @@ spec:
       namespace: {{ .Release.Namespace }}
       port: {{ .Values.plugin.port }}
       basePath: {{ .Values.plugin.basePath }}
+{{- if .Values.plugin.proxy }}
+  proxy:
+{{ toYaml .Values.plugin.proxy | nindent 4 }}
+{{- end }}

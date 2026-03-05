@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-prom-oauth-proxy
+  namespace: custom-monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: prom-oauth-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: custom-monitoring
+      ports:
+        - protocol: TCP
+          port: 9091
